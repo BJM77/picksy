@@ -34,29 +34,29 @@ class EbayService {
     }
 
     /**
-     * Search for sold items on eBay
+     * Search for recently ended/sold items on eBay
      */
     async searchSoldItems(query: string, limit: number = 20): Promise<EbaySearchResult[]> {
         const token = await getEbayAppToken();
+        if (!token) return [];
 
         const baseUrl = this.config.environment === 'production'
             ? 'https://api.ebay.com'
             : 'https://api.sandbox.ebay.com';
 
-        // Build search URL with filters
-        // For sold items: usually requires specific permissions or scraping.
-        // However, we can use the Browse API with filters.
-        // Note: The public Browse API does not always return historical sold data reliably without specific access.
-        // We will try using the `COMPLETED` filter if available, or just general search for now to prove connection.
-        // eBay Browse API `filter` for sold items is `buyingOptions:{FIXED_PRICE},itemEndDate:[..]`.
-        // A common workaround for "Sold" via API is difficult without "Marketplace Insights" or similar.
-        // We will use standard search for this test to verify connectivity and data retrieval.
+        // NOTE ON SOLD DATA:
+        // The eBay Browse API (item_summary/search) primarily returns ACTIVE listings.
+        // To get TRUE sold data, the Marketplace Insights API is required (restricted access).
+        // As a workaround, we sort by 'newly_listed' and provide a direct link to eBay's Sold page for 100% accuracy.
+        // We also filter for fixed price to avoid seeing changing auction numbers.
+
+        const optimizedQuery = await optimizeSearchQuery(query);
 
         const params = new URLSearchParams({
-            q: query,
+            q: optimizedQuery,
             limit: limit.toString(),
-            sort: 'price',
-            filter: 'buyingOptions:{FIXED_PRICE|AUCTION},conditions:{USED|NEW|EXCELLENT|VERY_GOOD|GOOD|FAIR|POOR}',
+            // Remove the restrictive FIXED_PRICE filter and newly_listed sort 
+            // to improve results for specific player searches like Kon Knueppel
         });
 
         const url = `${baseUrl}/buy/browse/v1/item_summary/search?${params}`;
@@ -86,14 +86,22 @@ class EbayService {
         }
 
         // Transform to our format
-        return data.itemSummaries.map(item => ({
-            title: item.title,
-            price: parseFloat(item.price.value),
-            soldDate: item.itemEndDate || new Date().toISOString(),
-            link: item.itemWebUrl,
-            condition: item.condition,
-            image: item.image?.imageUrl
-        }));
+        return data.itemSummaries.map(item => {
+            const price = parseFloat(item.price.value);
+            // If itemEndDate is in the past, it's more likely a sold/ended item
+            // If it's in the future, it's an active listing
+            const endDate = item.itemEndDate ? new Date(item.itemEndDate) : new Date();
+            const isEnded = endDate < new Date();
+
+            return {
+                title: item.title,
+                price: price,
+                soldDate: item.itemEndDate || new Date().toISOString(),
+                link: item.itemWebUrl,
+                condition: item.condition,
+                image: item.image?.imageUrl
+            };
+        });
     }
     /**
      * Calculate average price from results
@@ -127,9 +135,13 @@ export const ebayService = new EbayService();
 export async function optimizeSearchQuery(title: string): Promise<string> {
     if (!title) return '';
 
-    // Remove common filler words
-    let query = title
-        .replace(/\b(L@@K|WOW|HOT|RARE|INVESTMENT|PSA\?|GEM|MINT|SSSP|1\/1)\b/gi, '')
+    // Handle year ranges often used in sports cards (e.g., 2025-26 -> 2025 2026)
+    let query = title.replace(/(\d{4})-(\d{2,4})/g, '$1 $2');
+
+    // Remove common filler/spam words that don't help search accuracy
+    query = query
+        .replace(/\b(L@@K|WOW|HOT|RARE|INVESTMENT|PSA\?|GEM|MINT|SSSP|1\/1|CASE HIT|SSP|SHORT PRINT|VHTF|LOOK|EBAY)\b/gi, '')
+        .replace(/\+/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
 

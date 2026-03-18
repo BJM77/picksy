@@ -65,7 +65,7 @@ export function OfferModal({ product, user, trigger }: OfferModalProps) {
             const idToken = await getCurrentUserIdToken();
             if (!idToken) throw new Error("Authentication failed");
 
-            const result = await placeBidAction(product.id, idToken, amount, paymentMethodId);
+            const result = await placeBidAction(product.id, amount, idToken, paymentMethodId);
 
             if (result.success) {
                 toast({

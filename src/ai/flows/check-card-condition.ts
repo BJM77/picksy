@@ -22,7 +22,7 @@ export async function checkCardCondition(input: CardConditionInput): Promise<Car
 
 const cardConditionPrompt = ai.definePrompt({
     name: 'cardConditionPrompt',
-    model: 'googleai/gemini-flash-latest',
+    model: 'googleai/gemini-1.5-flash',
     input: { schema: cardConditionInputSchema },
     output: { schema: cardConditionOutputSchema },
     prompt: `You are a professional trading card grader with expertise from a leading company like PSA or BGS.
@@ -50,7 +50,7 @@ const cardConditionFlow = ai.defineFlow(
         inputSchema: cardConditionInputSchema,
         outputSchema: cardConditionOutputSchema,
     },
-    async (input) => {
+    async (input: CardConditionInput) => {
         const { output } = await cardConditionPrompt(input);
         if (!output) {
             throw new Error('Failed to get a response from the AI model.');

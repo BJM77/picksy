@@ -17,7 +17,7 @@ import { syncUserOnLogin } from '@/app/actions/auth';
  * @param user The raw Firebase User object.
  * @returns A "safe" user object with only primitive values, or null.
  */
-function getSafeUser(user: User | null): SafeUser {
+function getSafeUser(user: User | null, role?: string): SafeUser {
   if (!user) {
     return null;
   }
@@ -26,6 +26,8 @@ function getSafeUser(user: User | null): SafeUser {
     email: user.email,
     displayName: user.displayName,
     photoURL: user.photoURL,
+    emailVerified: user.emailVerified,
+    role: role,
     // Pass the function reference, it will be called in components
     getIdTokenResult: (forceRefresh?: boolean) => user.getIdTokenResult(forceRefresh),
     getIdToken: (forceRefresh?: boolean) => user.getIdToken(forceRefresh),
@@ -37,6 +39,7 @@ interface UserAuthState {
   user: SafeUser;
   isUserLoading: boolean;
   userError: Error | null;
+  role?: string;
 }
 
 // Combined state for the Firebase context
@@ -49,6 +52,7 @@ export interface FirebaseContextState {
   user: SafeUser;
   isUserLoading: boolean;
   userError: Error | null;
+  role?: string;
 }
 
 // Return type for useFirebase()
@@ -59,6 +63,7 @@ export interface FirebaseServicesAndUser {
   user: SafeUser;
   isUserLoading: boolean;
   userError: Error | null;
+  role?: string;
 }
 
 // React Context
@@ -76,6 +81,7 @@ export const FirebaseProvider: React.FC<{
       user: null,
       isUserLoading: true,
       userError: null,
+      role: undefined
     });
 
     const authService = typeof window !== 'undefined' ? authInstance : null;
@@ -94,6 +100,13 @@ export const FirebaseProvider: React.FC<{
         async (firebaseUser) => { // Raw Firebase user
           if (firebaseUser) {
             try {
+              const tokenResult = await firebaseUser.getIdTokenResult();
+              const role = tokenResult.claims.role as string;
+              
+              // Optimistic update with role
+              const safeUser = getSafeUser(firebaseUser, role);
+              setUserAuthState({ user: safeUser, isUserLoading: false, userError: null, role });
+
               const token = await firebaseUser.getIdToken();
               // 1. Sync Session Cookie
               await fetch("/api/auth/session", {
@@ -102,20 +115,21 @@ export const FirebaseProvider: React.FC<{
               });
 
               // 2. Sync User Data (Server Action)
-              // Dynamically import to avoid server-action-in-client-component issues if not carefully handled, 
-              // though importing server action in client component IS allowed in Next.js.
-              // We'll use the imported function.
               await syncUserOnLogin(token);
 
             } catch (err) {
               console.error("Failed to sync session/user:", err);
+              // Fallback to basic safe user without role if claim fetch fails
+              setUserAuthState({ user: getSafeUser(firebaseUser), isUserLoading: false, userError: null });
             }
           } else {
-            // Clear session cookie
-            await fetch("/api/auth/session", { method: "DELETE" });
+            // Logged out
+            setUserAuthState({ user: null, isUserLoading: false, userError: null, role: undefined });
+            // Cleanup session cookie in background
+            fetch("/api/auth/session", { method: "DELETE" }).catch(() => { });
           }
-          setUserAuthState({ user: getSafeUser(firebaseUser), isUserLoading: false, userError: null });
         },
+
         (error) => {
           console.error("FirebaseProvider: onAuthStateChanged error:", error);
           setUserAuthState({ user: null, isUserLoading: false, userError: error });
@@ -136,6 +150,7 @@ export const FirebaseProvider: React.FC<{
         user: userAuthState.user,
         isUserLoading: userAuthState.isUserLoading,
         userError: userAuthState.userError,
+        role: userAuthState.role,
       };
     }, [userAuthState]);
 
@@ -166,6 +181,7 @@ export const useFirebase = (): FirebaseServicesAndUser => {
     user: context.user,
     isUserLoading: context.isUserLoading,
     userError: context.userError,
+    role: context.role,
   };
 };
 

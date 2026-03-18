@@ -3,6 +3,10 @@
 import { firestoreDb } from '@/lib/firebase/admin';
 import { verifyIdToken } from '@/lib/firebase/auth-admin';
 import { Product } from '@/lib/types';
+import { revalidateTag } from 'next/cache';
+import { logActivity } from '@/services/activity-logs';
+import { rejectAllBidsForProduct } from './bidding';
+
 // import { notifySellerOfRemoval } from '@/ai/flows/notify-seller-of-removal';
 
 /**
@@ -50,8 +54,33 @@ export async function deleteProductByAdmin(
 
         const product = productSnap.data() as Product;
 
-        // 2. Delete the Product
-        await productRef.delete();
+        // 2. Soft Delete the Product
+        await productRef.update({
+            status: 'deleted',
+            deletedAt: firestoreDb.collection('products').doc().id ? new Date() : new Date(), // Using direct update with date
+            updatedAt: new Date()
+        });
+
+        // Notify Bidders
+        await rejectAllBidsForProduct(productId, 'Admin removed listing');
+
+        // Enterprise Safety: Log the deletion activity
+        await logActivity({
+            action: 'product_deleted',
+            resourceId: productId,
+            resourceType: 'product',
+            performedBy: {
+                uid: decodedToken.uid,
+                email: decodedToken.email,
+                displayName: decodedToken.name,
+                role: decodedToken.role || 'admin'
+            },
+            details: {
+                productTitle: product.title,
+                originalStatus: product.status,
+                reason: 'Admin Removal'
+            }
+        });
 
         // 3. Notify the Seller via AI Flow (non-blocking)
         let notificationStatus = '';
@@ -66,15 +95,19 @@ export async function deleteProductByAdmin(
                 });
                 notificationStatus = ' and the seller has been notified';
             } catch (notifyError: any) {
-                console.error('Failed to notify seller, but product was deleted:', notifyError);
+                console.error('Failed to notify seller, but product was soft-deleted:', notifyError);
                 // Don't fail the entire operation if notification fails.
                 notificationStatus = ' but failed to notify the seller';
             }
         }
 
+        revalidateTag('active-listings-count');
+        revalidateTag('products-featured');
+        revalidateTag('products-sneakers');
+
         return {
             success: true,
-            message: `Product "${product.title}" has been deleted${notificationStatus}.`,
+            message: `Product "${product.title}" has been removed${notificationStatus}.`,
         };
 
     } catch (error: any) {
@@ -165,18 +198,21 @@ export async function approveProductByAdmin(
 
         const admin = require('firebase-admin');
         const now = admin.firestore.Timestamp.now();
-        const oneHourLater = admin.firestore.Timestamp.fromMillis(now.toMillis() + (60 * 60 * 1000));
 
         await productRef.update({
             status: 'available',
             approvedAt: now,
-            publicReleaseAt: oneHourLater,
+            publicReleaseAt: now,
             updatedAt: now,
         });
 
+        revalidateTag('active-listings-count');
+        revalidateTag('products-featured');
+        revalidateTag('products-sneakers');
+
         return {
             success: true,
-            message: `Product has been approved and released to Business users. It will be public in 1 hour.`,
+            message: `Product has been approved and is now live and public.`,
         };
     } catch (error: any) {
         console.error('Admin Approve Product Error:', error);
@@ -231,6 +267,10 @@ export async function toggleProductHold(
                 await issueWarning(idToken, sellerId, `Product "${productSnap.data()?.title}" placed on hold: ${reason}`);
             }
         }
+
+        revalidateTag('active-listings-count');
+        revalidateTag('products-featured');
+        revalidateTag('products-sneakers');
 
         return {
             success: true,

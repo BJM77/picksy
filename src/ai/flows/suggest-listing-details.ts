@@ -5,50 +5,61 @@ import { suggestListingDetailsInputSchema, suggestListingDetailsOutputSchema, ty
 import { verifyIdToken } from '@/lib/firebase/auth-admin';
 import { logAIUsage } from '@/services/ai-usage';
 
-export async function suggestListingDetails(input: SuggestListingDetailsInput): Promise<SuggestListingDetailsOutput> {
+export async function suggestListingDetails(input: SuggestListingDetailsInput): Promise<{ data?: SuggestListingDetailsOutput; error?: string }> {
     try {
         console.log('🚀 [Server] suggestListingDetails called');
         console.log('📊 [Server] Input images count:', input.photoDataUris?.length);
+        console.log('📊 [Server] Category context:', input.category);
 
-        await verifyIdToken(input.idToken);
+        if (!input.idToken) {
+            return { error: 'Authentication token is required.' };
+        }
 
-        // Pre-process images: Convert URLs to Data URIs (Base64)
-        // This ensures Gemini receives the image data directly, avoiding access/CORS issues with Firebase Storage URLs.
+        let decodedToken;
+        try {
+            decodedToken = await verifyIdToken(input.idToken);
+        } catch (authErr: any) {
+            console.error('❌ [Server] verifyIdToken failed:', authErr);
+            return { error: `Authentication failed: ${authErr.message}` };
+        }
+
+        // Pre-process images: Convert URLs to Data URIs (Base64) only if necessary
         if (input.photoDataUris && input.photoDataUris.length > 0) {
-            console.log('🔄 [Server] converting URLs to Base64...');
+            console.log('🔄 [Server] checking image formats...');
             const processedImages = await Promise.all(input.photoDataUris.map(async (uri) => {
                 if (uri.startsWith('http')) {
                     try {
+                        console.log(`🌐 [Server] Fetching remote image: ${uri.substring(0, 50)}...`);
                         const response = await fetch(uri);
-                        if (!response.ok) throw new Error(`Failed to fetch image: ${response.statusText}`);
+                        if (!response.ok) {
+                            console.error(`❌ [Server] Failed to fetch image: ${response.status} ${response.statusText}`);
+                            throw new Error(`Failed to fetch image: ${response.statusText}`);
+                        }
                         const arrayBuffer = await response.arrayBuffer();
                         const base64String = Buffer.from(arrayBuffer).toString('base64');
                         const mimeType = response.headers.get('content-type') || 'image/jpeg';
-                        // Return standard data URI format
                         return `data:${mimeType};base64,${base64String}`;
-                    } catch (fetchErr) {
-                        console.error('❌ [Server] Failed to fetch image for AI analysis:', fetchErr);
-                        throw new Error('Failed to download one or more images for analysis.');
+                    } catch (fetchErr: any) {
+                        console.error('❌ [Server] Image fetch exception:', fetchErr.message);
+                        throw new Error(`AI was unable to access the image URL. Error: ${fetchErr.message}`);
                     }
                 }
-                return uri; // Already a data URI or invalid
+                return uri; // Already a data URI (compressed locally by client)
             }));
 
             input.photoDataUris = processedImages;
-            console.log('✅ [Server] Conversion complete. Payload ready.');
         }
 
         const result = await suggestListingDetailsFlow(input);
 
-        // Log Usage
-        const decodedToken = await verifyIdToken(input.idToken);
+        // Log Usage using the already verified token or decoded payload
         await logAIUsage('Listing Suggestion', 'vision_analysis', decodedToken.uid);
 
-        return result;
+        return { data: result };
 
     } catch (error: any) {
         console.error('❌ [Server] suggestListingDetails failed:', error);
-        throw new Error(error.message || 'AI analysis service failed.');
+        return { error: error.message || 'AI analysis service failed.' };
     }
 }
 
@@ -57,35 +68,49 @@ const suggestListingDetailsPrompt = ai.definePrompt({
     model: 'googleai/gemini-flash-latest',
     input: { schema: suggestListingDetailsInputSchema },
     output: { schema: suggestListingDetailsOutputSchema },
-    prompt: `You are an expert in valuing and listing collectibles. Analyze the provided information (images and/or title) to generate listing details.
+    prompt: `You are an expert in valuing and listing authentic sneakers, streetwear, trading cards, coins, and general collectibles/memorabilia. Analyze the provided information (images and/or title) to generate detailed listing metadata.
 
 {{#if title}}
 Provided Title: {{title}}
 {{/if}}
 
 {{#if category}}
-Selected Category: {{category}}
+Selected Category Context: {{category}}
 {{/if}}
 
 {{#if photoDataUris.length}}
-Images:
+Images for Analysis:
 {{#each photoDataUris}}
 - {{media url=this}}
 {{/each}}
 {{else}}
-(No images provided. Base your analysis solely on the title.)
+(No images provided. Base your analysis solely on the title if available.)
 {{/if}}
 
 Based on the images and/or title, provide the following details:
-1.  **Title:** A concise, descriptive, and SEO-friendly title. Include key identifiers like name, year, and brand. (Refine the provided title if necessary).
-2.  **Description:** A one-to-two-line description highlighting key features and condition.
-3.  **Price:** An estimated market price in AUD (Australian Dollars). Be realistic based on the visual information or title.
-4.  **Category:** Choose the single best category from this list: 'Collector Cards', 'Coins', 'Collectibles'.
-5.  **Sub-Category:** Choose the most specific sub-category based on the main category. For 'Collector Cards', choose from: 'Sports Cards', 'Trading Cards'. For 'Coins', use: 'Coins', 'World Coins', 'Ancient Coins', 'Bullion'. For 'Collectibles', use: 'Stamps', 'Comics', 'Figurines', 'Toys', 'Shoes', 'Memorabilia'.
-6.  **Condition:** Assess the item's condition from this list: 'Mint', 'Near Mint', 'Excellent', 'Good', 'Fair', 'Poor'. If no images are provided, default to 'Good' or make a safe assumption based on context.
-7.  **Manufacturer:** Identify the manufacturer or brand.
-8.  **Year:** Estimate the year of manufacture or release.
-9.  **Card Number:** If it's a collector card, identify the card number (e.g., '4/102', 'RC25'). If not applicable, leave blank.
+1.  **Title:** A concise, descriptive, and SEO-friendly title. 
+    - Sneakers: Brand Model Colorway (e.g., 'Nike Air Jordan 1 High Chicago')
+    - Cards: Year Set Player Card# (e.g., '2019 Panini Prizm Zion Williamson #248')
+    - Coins: Year Denomination Mint Mark Description (e.g., '2023 $2 C-Mint Mark 60th Anniversary of Coronation')
+2.  **Description:** A professional one-to-two line description highlighting key features, set names, or condition notes.
+3.  **Price:** An estimated market price in AUD (Australian Dollars). Return as a number.
+4.  **Category:** Choose the most appropriate: 'Sneakers', 'Collector Cards', 'Accessories', 'Streetwear', 'Coins', 'Collectibles', 'Memorabilia'.
+5.  **Sub-Category:** 
+    - For Sneakers: 'Men\'s Sneakers', 'Women\'s Sneakers', etc.
+    - For Cards: The sport or type (e.g., 'Basketball Cards', 'Pokémon').
+    - For Coins: The type (e.g., 'Decimal Coins', 'Pre-Decimal', 'Gold Coins').
+6.  **Condition:** 
+    - Sneakers: 'New with Box', 'Used', etc.
+    - Cards: The estimated grade (e.g., 'Mint 9', 'Near Mint 7', 'Raw').
+    - Coins: 'UNC', 'Circulated', 'Proof', or a grade like 'MS65'.
+7.  **Brand/Manufacturer:** e.g., 'Nike', 'Panini', 'Royal Australian Mint', 'Perth Mint'.
+8.  **Model/Set:** e.g., 'Air Jordan 1', 'Prizm', 'Kookaburra Series'.
+9.  **Year:** Release or mint year as a number.
+10. **Coin Specifics:** Extract denomination (e.g., '$2'), mint mark ('C', 'S', etc.), country, metal (Gold, Silver, Bronze), purity (99.9%), and weight (1oz).
+11. **Collectibles/Memorabilia:** Extract dimensions, material, authentication (PSA/DNA, JSA), and signer if applicable.
+12. **Trading Cards:** Extract cardNumber, manufacturer, and grading info (Grading Company and Grade).
+
+Return all applicable fields. If a field is unknown, omit it or leave it as null/empty string.
 `,
 });
 
@@ -95,10 +120,10 @@ const suggestListingDetailsFlow = ai.defineFlow(
         inputSchema: suggestListingDetailsInputSchema,
         outputSchema: suggestListingDetailsOutputSchema,
     },
-    async (input) => {
+    async (input: SuggestListingDetailsInput) => {
         const { output } = await suggestListingDetailsPrompt(input);
         if (!output) {
-            throw new Error('Failed to get a response from the AI model for listing details.');
+            throw new Error("AI failed to return valid metadata.");
         }
         return output;
     }

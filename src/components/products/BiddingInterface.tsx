@@ -31,7 +31,7 @@ export function BiddingInterface({ product, user, onAcceptBid }: BiddingInterfac
             const idToken = await getCurrentUserIdToken();
             if (!idToken) throw new Error("Please sign in to place an offer.");
 
-            const result = await placeBidAction(product.id, idToken, parseFloat(bidAmount));
+            const result = await placeBidAction(product.id, parseFloat(bidAmount), idToken);
 
             if (!result.success) {
                 throw new Error(result.error);

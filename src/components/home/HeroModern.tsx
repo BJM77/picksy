@@ -25,9 +25,9 @@ export default function HeroModern() {
 
             <div className="max-w-7xl mx-auto px-4 pt-12 pb-16 md:pt-32 md:pb-32 relative z-10 text-center">
                 <h1 className="text-3xl md:text-6xl font-black text-gray-900 dark:text-white tracking-tight mb-4">
-                    Australia's Premier Marketplace for <br />
+                    An Online Marketplace for <br />
                     <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary to-orange-500">
-                        Trading Cards & Collectibles
+                        Individuals & NFP Organisations
                     </span>
                 </h1>
 

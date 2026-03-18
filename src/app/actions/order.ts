@@ -8,6 +8,7 @@ import type { Product } from '@/lib/types';
 import { serializeFirestoreData } from '@/lib/utils';
 import { getSystemSettingsAdmin } from '@/services/settings-service';
 import { calculateItemTotal, calculateShipping, calculateTax } from '@/lib/pricing';
+import { sendTelegramNotification } from '@/lib/telegram';
 
 interface CartItem {
     id: string;
@@ -24,6 +25,7 @@ interface OrderOptions {
         state: string;
         zip: string;
     };
+    paymentMethod?: 'Card' | 'PayID Escrow';
 }
 
 export async function createOrderAction(items: CartItem[], idToken: string, options?: OrderOptions) {
@@ -70,6 +72,14 @@ export async function createOrderAction(items: CartItem[], idToken: string, opti
                     throw new Error(`Not enough stock for ${product.title}.`);
                 }
 
+                // Hold check: If quantity is 1 and it's held by someone else
+                const now = new Date();
+                const currentHoldExpiresAt = product.holdExpiresAt?.toDate();
+                const isCurrentlyHeld = currentHoldExpiresAt && currentHoldExpiresAt > now;
+                if (isCurrentlyHeld && product.heldBy !== buyerId) {
+                    throw new Error(`Sorry, ${product.title} is currently reserved by another buyer.`);
+                }
+
                 const sellerId = product.sellerId;
                 if (!sellerGroups[sellerId]) {
                     sellerGroups[sellerId] = { items: [], subtotal: 0, sellerName: product.sellerName };
@@ -87,7 +97,7 @@ export async function createOrderAction(items: CartItem[], idToken: string, opti
                     quantity: item.quantity,
                     image: product.imageUrls?.[0] || '',
                     sellerId: product.sellerId,
-                    dealId: item.dealId,
+                    dealId: item.dealId || null,
                 });
                 sellerGroups[sellerId].subtotal += itemTotal;
 
@@ -105,6 +115,8 @@ export async function createOrderAction(items: CartItem[], idToken: string, opti
             // 2. Create an order for each seller
             for (const [sellerId, group] of Object.entries(sellerGroups)) {
                 const orderRef = firestoreDb.collection('orders').doc();
+                const sellerProfile = fetchedUsers[sellerId];
+                const isBusiness = sellerProfile?.role === 'business';
 
                 const shippingCost = calculateShipping(
                     group.subtotal,
@@ -115,12 +127,19 @@ export async function createOrderAction(items: CartItem[], idToken: string, opti
                     }
                 );
 
-                const taxAmount = calculateTax(group.subtotal, settings.standardTaxRate);
-                const totalAmount = group.subtotal + shippingCost + taxAmount;
+                // Tax logic: Business = inclusive, Individual = 0
+                const taxAmount = isBusiness 
+                    ? calculateTax(group.subtotal, settings.standardTaxRate, true) 
+                    : 0;
+                
+                // Total amount = Subtotal + Shipping (Tax is already in subtotal if business)
+                const totalAmount = group.subtotal + shippingCost;
 
                 // Get the first product to determine seller - safe because group has items
                 // Use fetchedUsers to get PayPal link
-                const sellerPaypalLink = fetchedUsers[sellerId]?.paypalMeLink || null;
+                const sellerPaypalLink = sellerProfile?.paypalMeLink || null;
+
+                const payIdReference = `BNCH-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
 
                 const newOrder = {
                     groupOrderId,
@@ -134,14 +153,18 @@ export async function createOrderAction(items: CartItem[], idToken: string, opti
                     buyerName: buyerName || buyerEmail,
                     sellerId,
                     sellerName: group.sellerName,
-                    status: 'processing',
+                    isBusinessSeller: isBusiness, // Track seller type for invoice/UI
+                    status: options?.paymentMethod === 'PayID Escrow' ? 'awaiting_payment' : 'processing',
                     paymentStatus: 'pending',
-                    paymentMethod: 'Cash on Delivery',
+                    paymentMethod: options?.paymentMethod || 'Card',
                     shippingMethod: options?.shippingMethod || 'pickup',
                     shippingAddress: options?.shippingAddress || null,
                     createdAt: FieldValue.serverTimestamp(),
                     updatedAt: FieldValue.serverTimestamp(),
                     sellerPaypalMeLink: sellerPaypalLink,
+                    payIdReference,
+                    nudgeCount: 0,
+                    lastNudgeAt: null,
                 };
 
                 t.set(orderRef, newOrder);
@@ -157,6 +180,25 @@ export async function createOrderAction(items: CartItem[], idToken: string, opti
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
         }));
+
+        // Send Telegram notification for the new order(s)
+        try {
+            const totalAmount = results.reduce((acc: number, order: any) => acc + order.totalAmount, 0);
+            const itemsCount = items.reduce((acc, item) => acc + item.quantity, 0);
+            const sellerNames = results.map((order: any) => order.sellerName).join(', ');
+
+            await sendTelegramNotification(
+                `<b>💰 New Order Received!</b>\n\n` +
+                `<b>Order ID:</b> ${results[0].groupOrderId}\n` +
+                `<b>Buyer:</b> ${buyerName || buyerEmail}\n` +
+                `<b>Sellers:</b> ${sellerNames}\n` +
+                `<b>Items:</b> ${itemsCount}\n` +
+                `<b>Total:</b> $${totalAmount.toFixed(2)}\n\n` +
+                `<a href="https://picksy.au/admin/orders">View in Admin Dashboard</a>`
+            );
+        } catch (tgError) {
+            console.error('Failed to send Telegram notification:', tgError);
+        }
 
         return { orders: serializedOrders };
 
@@ -203,5 +245,41 @@ export async function updateOrderStatus(idToken: string, orderId: string, status
     } catch (error: any) {
         console.error("Update order status failed:", error);
         return { success: false, message: error.message || "Failed to update order." };
+    }
+}
+
+/**
+ * Allows the buyer to confirm receipt of the order.
+ */
+export async function confirmOrderReceipt(idToken: string, orderId: string) {
+    try {
+        const decodedToken = await verifyIdToken(idToken);
+        const { uid: userId } = decodedToken;
+
+        const orderRef = firestoreDb.collection('orders').doc(orderId);
+        const orderSnap = await orderRef.get();
+
+        if (!orderSnap.exists) throw new Error("Order not found.");
+        const orderData = orderSnap.data();
+
+        // Check if the user is the buyer of this order
+        if (orderData?.buyerId !== userId) {
+            throw new Error("Unauthorized access. Only the buyer can confirm receipt.");
+        }
+
+        // Must be in a state that can be confirmed (processing or shipped)
+        if (!['processing', 'shipped'].includes(orderData?.status)) {
+            throw new Error("Order cannot be confirmed at this stage.");
+        }
+
+        await orderRef.update({
+            status: 'delivered',
+            updatedAt: FieldValue.serverTimestamp(),
+        });
+
+        return { success: true, message: "Order confirmed successfully." };
+    } catch (error: any) {
+        console.error("Confirm order receipt failed:", error);
+        return { success: false, message: error.message || "Failed to confirm receipt." };
     }
 }

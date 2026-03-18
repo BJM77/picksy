@@ -69,7 +69,7 @@ const nextConfig = {
     // Content Security Policy
     const cspHeader = `
       default-src 'self';
-      script-src 'self' 'unsafe-eval' 'unsafe-inline' https://apis.google.com https://www.googletagmanager.com https://js.stripe.com https://m.stripe.network;
+      script-src 'self' 'unsafe-eval' 'unsafe-inline' https://apis.google.com https://www.googletagmanager.com https://js.stripe.com https://m.stripe.network https://cdn.jsdelivr.net;
       worker-src 'self' blob:;
       style-src 'self' 'unsafe-inline';
       img-src 'self' data: blob: https: *.googleapis.com *.firebasestorage.app *.firebaseapp.com;

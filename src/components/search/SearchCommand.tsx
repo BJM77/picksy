@@ -3,7 +3,18 @@
 
 import * as React from "react"
 import { useRouter } from "next/navigation"
-import { Calculator, Calendar, CreditCard, Settings, Smile, User, Search, Home, ShoppingBag, Coins, Layers } from "lucide-react"
+import { Calculator, Calendar, CreditCard, Settings, Smile, User, Search, Home, ShoppingBag, Coins, Layers, Footprints, Dna, Sparkles, Stamp, Trophy } from "lucide-react"
+import { MARKETPLACE_CATEGORIES } from '@/config/categories';
+
+const ICON_MAP: Record<string, any> = {
+    'Footprints': Footprints,
+    'Layers': Layers,
+    'Dna': Dna,
+    'Coins': Coins,
+    'Sparkles': Sparkles,
+    'Stamp': Stamp,
+    'Trophy': Trophy,
+};
 
 import {
     CommandDialog,
@@ -78,14 +89,15 @@ export function SearchCommand({ open, setOpen }: SearchCommandProps) {
                         <ShoppingBag className="mr-2 h-4 w-4" />
                         <span>Browse All</span>
                     </CommandItem>
-                    <CommandItem onSelect={() => runCommand(() => router.push('/collector-cards'))}>
-                        <Layers className="mr-2 h-4 w-4" />
-                        <span>Collector Cards</span>
-                    </CommandItem>
-                    <CommandItem onSelect={() => runCommand(() => router.push('/coins'))}>
-                        <Coins className="mr-2 h-4 w-4" />
-                        <span>Coins</span>
-                    </CommandItem>
+                    {MARKETPLACE_CATEGORIES.slice(0, 3).map(cat => {
+                        const Icon = ICON_MAP[cat.iconName || 'Layers'] || Layers;
+                        return (
+                            <CommandItem key={cat.id} onSelect={() => runCommand(() => router.push(cat.href || `/category/${cat.slug}`))}>
+                                <Icon className="mr-2 h-4 w-4" />
+                                <span>{cat.name}</span>
+                            </CommandItem>
+                        );
+                    })}
                 </CommandGroup>
                 <CommandSeparator />
                 <CommandGroup heading="My Account">

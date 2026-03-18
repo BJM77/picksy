@@ -1,22 +1,34 @@
 import { z } from 'zod';
 
 export const productFormSchema = z.object({
-    title: z.string().min(5, "Title must be at least 5 characters").max(100, "Title must be less than 100 characters"),
-    description: z.string().min(20, "Description must be at least 20 characters").max(2000, "Description must be less than 2000 characters"),
+    title: z.string().min(1, "Title is required").max(100, "Title must be less than 100 characters"),
+    description: z.string().max(2000, "Description must be less than 2000 characters").optional(),
     price: z.number().min(0, "Price must be positive"),
-    category: z.string().min(1, "Category is required"),
-    subCategory: z.string().optional(),
-    imageUrls: z.array(z.string().url("Invalid image URL")).min(1, "At least one image is required").max(10, "Maximum 10 images"),
-    condition: z.string().min(1, "Condition is required"),
-    conditionDescription: z.string().optional(),
 
-    // Grading
+    // Categories
+    category: z.enum(['Sneakers', 'Apparel', 'Collector Cards', 'Accessories'], {
+        errorMap: () => ({ message: "Please select a valid category" })
+    }),
+    subCategory: z.string().optional(),
+
+    imageUrls: z.array(z.string().url("Invalid image URL")).min(1, "At least one image is required").max(10, "Maximum 10 images"),
+
+    // Sneaker Specifics
+    brand: z.string().min(1, "Brand is required (e.g., Nike, Jordan)"),
+    model: z.string().optional(),
+    styleCode: z.string().optional(), // Highly recommended for sneakers
+    colorway: z.string().optional(),
+    size: z.string().min(1, "Size is required (e.g., US 10)"),
+
+    condition: z.string().min(1, "Condition is required"), // Keeping as string to allow flexibility, but usually New/Used
+    conditionDescription: z.string().optional(),
+    boxCondition: z.enum(['Good Box', 'Bad Box', 'No Box']).optional(),
+
+    // Legacy / Optional (kept for compatibility but generally unused for sneakers)
+    year: z.number().int().min(1980).max(new Date().getFullYear() + 1).optional(),
     gradingCompany: z.enum(['PSA', 'BGS', 'CGC', 'SGC', 'Raw']).optional(),
     grade: z.string().optional(),
     certNumber: z.string().optional(),
-
-    // Additional details
-    year: z.number().int().min(1800).max(new Date().getFullYear() + 1).optional(),
     manufacturer: z.string().optional(),
     cardNumber: z.string().optional(),
 
@@ -26,22 +38,26 @@ export const productFormSchema = z.object({
     isDraft: z.boolean().default(false),
     quantity: z.number().int().min(1).default(1),
 
-    // Feature Flags (Added for new features)
+    // Feature Flags
     isVault: z.boolean().optional(),
     isReverseBidding: z.boolean().optional(),
     autoRepricingEnabled: z.boolean().optional(),
     isNegotiable: z.boolean().optional(),
     isUntimed: z.boolean().optional(),
 
+    isPromoted: z.boolean().optional().default(false),
+    promotionExpiresAt: z.any().optional(),
+    promotionSessionId: z.string().optional(),
+
     // Auction fields
     isAuction: z.boolean().optional(),
     startingBid: z.number().min(0).optional(),
-    auctionEndTime: z.any().optional(), // Timestamp handling can be complex in zod, using any or coercion
+    auctionEndTime: z.any().optional(),
     buyItNowPrice: z.number().min(0).optional(),
     minStockQuantity: z.number().optional(),
 }).refine(data => {
     if (data.isUntimed) {
-        return true; // Price can be anything (usually 0) if untimed
+        return true;
     }
     return data.price >= 0.01;
 }, {

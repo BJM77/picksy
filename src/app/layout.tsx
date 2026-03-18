@@ -79,6 +79,9 @@ export const viewport: Viewport = {
 
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 
+import { MobileNavProvider } from '@/context/MobileNavContext';
+import { BottomNav } from '@/components/layout/BottomNav';
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -195,17 +198,20 @@ export default function RootLayout({
           <FirebaseProvider>
             <QueryProvider>
               <SidebarProvider>
-                <CartProvider>
-                  <ViewedProductsProvider>
-                    <GoogleAnalytics />
-                    <Header />
-                    <main className="min-h-screen">
-                      {children}
-                    </main>
-                    <Footer />
-                    <CartDrawer />
-                  </ViewedProductsProvider>
-                </CartProvider>
+                <MobileNavProvider>
+                  <CartProvider>
+                    <ViewedProductsProvider>
+                      <GoogleAnalytics />
+                      <Header />
+                      <main className="min-h-screen">
+                        {children}
+                      </main>
+                      <Footer />
+                      <BottomNav />
+                      <CartDrawer />
+                    </ViewedProductsProvider>
+                  </CartProvider>
+                </MobileNavProvider>
               </SidebarProvider>
             </QueryProvider>
           </FirebaseProvider>

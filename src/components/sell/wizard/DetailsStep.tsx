@@ -11,11 +11,12 @@ interface DetailsStepProps {
     form: any;
     selectedType: 'cards' | 'coins' | 'general';
     subCategories: Record<string, string[]>;
+    categoryOptions: string[];
     conditionOptions: string[];
 }
 
-export function DetailsStep({ form, selectedType, subCategories, conditionOptions }: DetailsStepProps) {
-    const category = form.watch('category') || (selectedType === 'cards' ? 'Collector Cards' : selectedType === 'coins' ? 'Coins' : 'General');
+export function DetailsStep({ form, selectedType, subCategories, categoryOptions, conditionOptions }: DetailsStepProps) {
+    const category = form.watch('category');
 
     return (
         <div className="space-y-6 animate-in fade-in slide-in-from-right-8 duration-500">
@@ -36,6 +37,24 @@ export function DetailsStep({ form, selectedType, subCategories, conditionOption
                     )} />
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <FormField control={form.control} name="category" render={({ field }) => (
+                            <FormItem>
+                                <FormLabel>Category <span className="text-red-500">*</span></FormLabel>
+                                <Select onValueChange={(val) => {
+                                    field.onChange(val);
+                                    form.setValue('subCategory', ''); // Reset subcat on main cat change
+                                }} value={field.value}>
+                                    <FormControl><SelectTrigger><SelectValue placeholder="Select category" /></SelectTrigger></FormControl>
+                                    <SelectContent>
+                                        {categoryOptions.map((c: string) => (
+                                            <SelectItem key={c} value={c}>{c}</SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                                <FormMessage />
+                            </FormItem>
+                        )} />
+
                         <FormField control={form.control} name="subCategory" render={({ field }) => (
                             <FormItem>
                                 <FormLabel>Specific Category</FormLabel>

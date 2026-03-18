@@ -48,7 +48,7 @@ export async function suggestListingDetailsAction(input: {
     photoUrls: string[];
     title?: string;
     idToken?: string;
-}): Promise<SuggestListingDetailsOutput> {
+}): Promise<{ data?: SuggestListingDetailsOutput; error?: string }> {
     try {
         await checkRateLimit(input.idToken);
         return await suggestListingDetailsFlow({

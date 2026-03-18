@@ -137,9 +137,16 @@ export default function MultiCoinPage() {
                 idToken
             });
 
-            if (result) {
-                setTitle(result.title);
-                setAiData(result);
+            if (result && result.data) {
+                setTitle(result.data.title || '');
+                setAiData(result.data);
+            } else if (result?.error) {
+                console.error("AI Fill error:", result.error);
+                toast({
+                    title: "AI Analysis Failed",
+                    description: result.error,
+                    variant: "destructive"
+                });
             }
         } catch (error) {
             console.error("AI Fill error:", error);

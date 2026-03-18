@@ -21,8 +21,11 @@ export type SafeUser = {
   email: string | null;
   displayName: string | null;
   photoURL: string | null;
+  emailVerified: boolean;
+  role?: string;
   // Add the getIdTokenResult method for custom claims
   getIdTokenResult: (forceRefresh?: boolean) => Promise<{ claims: { [key: string]: any; }; }>;
+  getIdToken: (forceRefresh?: boolean) => Promise<string>;
 } | null;
 
 export type UserRole = 'viewer' | 'seller' | 'business' | 'admin' | 'superadmin';
@@ -57,6 +60,7 @@ export type UserProfile = {
   stopReason?: string; // Reason for suspension
   // New Contact & Management Fields
   phoneNumber?: string;
+  location?: string;
   businessName?: string; // For Business users (Slug can be derived or stored in storeName)
   bannerUrl?: string;
   isFounder?: boolean;
@@ -71,6 +75,7 @@ export type Product = {
   title: string;
   description: string;
   price: number;
+  oldPrice?: number; // To track price drops for visual indicators
   category: string;
   subCategory?: string;
   sellerId: string;
@@ -87,20 +92,34 @@ export type Product = {
   detectedAttributes?: {
     year?: number | null;
     brand?: string | null;
-    player?: string | null;
-    grade?: string | null;
+    model?: string | null;
+    styleCode?: string | null;
+    size?: string | null;
+    colorway?: string | null;
   };
-  status: 'available' | 'sold' | 'draft' | 'pending_approval' | 'on_hold'; // Added on_hold
-  holdReason?: string;
+  // holdReason moved to line 165 for better grouping
+  status: 'available' | 'sold' | 'draft' | 'pending_approval' | 'on_hold' | 'deleted'; // Added deleted for soft deletion
   isPrivate?: boolean;
   approvedAt?: Timestamp;
   publicReleaseAt?: Timestamp;
+
+  // Sneaker Specifics
+  brand?: string;
+  model?: string;
+  styleCode?: string;
+  size?: string;
+  colorway?: string;
+  color?: string;
+  material?: string;
+
+  // Legacy / Other
   gradingCompany?: 'PSA' | 'BGS' | 'CGC' | 'SGC' | 'Raw';
   grade?: string;
   certNumber?: string;
   year?: number;
   manufacturer?: string;
   cardNumber?: string;
+
   createdAt?: Timestamp | Date;
   updatedAt?: Timestamp | Date;
   soldAt?: any;
@@ -113,9 +132,9 @@ export type Product = {
   quantity?: number;
   views?: number; // Total views (non-unique)
   uniqueViews?: number; // Unique views for auto-repricing
-
   lastViewedTimestamp?: Timestamp; // Timestamp of the most recent view for auto-repricing
   isVault?: boolean;
+  allowLocalPickup?: boolean;
   // New Auction Fields
   isAuction?: boolean;
   startingBid?: number;
@@ -124,10 +143,16 @@ export type Product = {
   buyItNowPrice?: number;
   bidHistory?: Bid[];
   autoRepricingEnabled?: boolean;
+  autoAcceptPrice?: number; // Auto-accept offers equal to or above this price
+  floorPrice?: number; // Auto-reject offers below this price
   minStockQuantity?: number;
   contactCallCount?: number; // Analytics for phone reveals
+  watchCount?: number; // Total number of users watching this product
   isNegotiable?: boolean;
   isFeatured?: boolean;
+  isPromoted?: boolean;
+  promotionExpiresAt?: Timestamp;
+  promotionSessionId?: string;
   title_lowercase?: string;
   isUntimed?: boolean;
   multibuyEnabled?: boolean;
@@ -136,6 +161,11 @@ export type Product = {
   dealId?: string;
   bundlePrice?: number;
   keywords?: string[];
+  acceptsPayId?: boolean;
+  holdReason?: 'checkout' | 'negotiation' | 'enquiry';
+  heldBy?: string;
+  holdExpiresAt?: Timestamp;
+  sellerRating?: number;
 };
 
 export type ProductSearchParams = {
@@ -151,6 +181,7 @@ export type ProductSearchParams = {
   priceRange?: [number, number];
   conditions?: string[];
   categories?: string[];
+  sizes?: string[];
   sellers?: string[];
   yearRange?: [number, number];
   verifiedOnly?: boolean;
@@ -158,6 +189,9 @@ export type ProductSearchParams = {
   status?: string;
   isUntimed?: boolean;
   multibuyEnabled?: boolean;
+  minRating?: number;
+  gradingCompanies?: string[];
+  manufacturer?: string;
 };
 
 
@@ -283,6 +317,7 @@ export interface Category {
   showInNav?: boolean;
   isPopular?: boolean;
   order?: number;
+  subcategories?: { id: string; name: string; slug: string; parentId: string; }[];
 }
 
 
@@ -320,7 +355,7 @@ export interface WantedListing {
   imageUrl?: string;
   createdAt: Timestamp;
   updatedAt: Timestamp;
-  status: 'active' | 'fulfilled' | 'cancelled';
+  status: 'active' | 'fulfilled' | 'cancelled' | 'deleted';
   contactCount: number;
 }
 
@@ -334,6 +369,39 @@ export interface WTBMessage {
   sellerId: string;
   sellerName: string;
   message: string;
-  status: 'pending' | 'read' | 'replied';
+  status: 'pending' | 'read' | 'replied' | 'cancelled' | 'archived';
   createdAt: Timestamp;
 }
+
+// Advertising System
+export interface Advertisement {
+  id: string;
+  title: string;
+  advertiserName: string;
+  linkUrl: string;
+  imageUrl: string;
+  placement: 'home_hero_footer' | 'grid_interstitial' | 'drops_header';
+  status: 'active' | 'paused' | 'scheduled' | 'ended';
+  startDate: Timestamp;
+  endDate: Timestamp;
+  impressions: number;
+  clicks: number;
+}
+
+// Activity Logging for Enterprise-grade safety
+export type ActivityLog = {
+  id?: string;
+  timestamp: Timestamp | Date;
+  action: 'product_deleted' | 'product_updated' | 'product_created' | 'price_changed' | 'status_changed' | 'user_banned' | 'user_unbanned' | 'login' | 'wtb_deleted' | 'wtb_fulfilled';
+  performedBy: {
+    uid: string;
+    email?: string;
+    displayName?: string;
+    role?: string;
+  };
+  resourceId: string;
+  resourceType: 'product' | 'user' | 'order' | 'wanted_listing' | 'category';
+  details?: any; // Stores 'before' and 'after' snapshots or specific changes
+  ipAddress?: string;
+  userAgent?: string;
+};

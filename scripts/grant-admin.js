@@ -4,7 +4,7 @@ const { getAuth } = require('firebase-admin/auth');
 const path = require('path');
 const fs = require('fs');
 
-const saPath = path.resolve(process.cwd(), 'studio-8322868971-8ca89-firebase-adminsdk-fbsvc-b2a4041fbd.json');
+const saPath = path.resolve(process.cwd(), 'service-account.json');
 const serviceAccount = JSON.parse(fs.readFileSync(saPath, 'utf8'));
 
 initializeApp({
@@ -25,5 +25,12 @@ async function grantAdmin(email) {
     }
 }
 
-const email = '1@1.com';
+const email = process.argv[2];
+
+if (!email) {
+    console.error('❌ Error: Please provide an email address as the first argument.');
+    console.log('Usage: node scripts/grant-admin.js user@example.com');
+    process.exit(1);
+}
+
 grantAdmin(email);

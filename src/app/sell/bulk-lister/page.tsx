@@ -117,10 +117,12 @@ function BulkListerPage() {
       try {
         // 1. Get AI suggestions
         const dataUri = await fileToDataUri(card.file);
-        const suggestions = await suggestListingDetails({
+        const aiResult = await suggestListingDetails({
           photoDataUris: [dataUri],
           idToken,
         });
+
+        const suggestions = aiResult.data || {};
 
         // 2. Upload image
         const imageUrls = await uploadImages(

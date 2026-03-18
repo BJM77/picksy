@@ -4,6 +4,47 @@ import { firestoreDb } from "@/lib/firebase/admin";
 import { UserProfile, Product } from "@/lib/types";
 import { serializeFirestoreData } from "@/lib/utils";
 import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
+import { verifyIdToken } from "@/lib/firebase/auth-admin";
+import { SUPER_ADMIN_UIDS } from "@/lib/constants";
+import { logActivity } from "@/services/activity-logs";
+import { rejectAllBidsForProduct } from "./bidding";
+
+/**
+ * Helper to get the authenticated user's ID from the session cookie.
+ * @deprecated Use verifyIdToken with a client-supplied token for sensitive actions.
+ */
+export async function getUserIdFromSession(): Promise<string | null> {
+    const cookieStore = await cookies();
+    const session = cookieStore.get('session') || cookieStore.get('__session');
+
+    if (session?.value) {
+        try {
+            // This is insecure as it only decodes. 
+            // For sensitive actions, use verifyIdToken from @/lib/firebase/auth-admin
+            const decodedToken = await verifyIdToken(session.value);
+            return decodedToken.uid || null;
+        } catch (error) {
+            return null;
+        }
+    }
+    return null;
+}
+
+/**
+ * Checks if a user is authorized to modify a product.
+ * Returns true if user is the seller or an admin.
+ */
+async function isAuthorized(decodedToken: any, productData: Product): Promise<boolean> {
+    const userId = decodedToken.uid;
+    const isOwner = productData.sellerId === userId;
+    const isAdmin = decodedToken.role === 'admin' || 
+                    decodedToken.role === 'superadmin' || 
+                    decodedToken.admin === true ||
+                    SUPER_ADMIN_UIDS.includes(userId);
+    
+    return isOwner || isAdmin;
+}
 
 export type SellerWithCategories = UserProfile & {
     categories: string[];
@@ -74,13 +115,31 @@ export async function getSellersAction(): Promise<SellerWithCategories[]> {
     }
 }
 
-export async function markAsSold(productId: string, fulfillmentType: string) {
+export async function markAsSold(idToken: string, productId: string, fulfillmentType: string) {
     try {
-        await firestoreDb.collection('products').doc(productId).update({
+        const decodedToken = await verifyIdToken(idToken);
+        const userId = decodedToken.uid;
+
+        const productRef = firestoreDb.collection('products').doc(productId);
+        const productSnap = await productRef.get();
+        if (!productSnap.exists) return { success: false, error: 'Product not found' };
+
+        const productData = productSnap.data() as Product;
+        if (!(await isAuthorized(decodedToken, productData))) {
+            return { success: false, error: 'You do not have permission to modify this listing.' };
+        }
+
+        await productRef.update({
             status: 'sold',
             fulfillmentStatus: fulfillmentType,
             soldAt: new Date(),
         });
+
+        // Trigger review nudge if someone was holding/enquiring
+        if (productData.heldBy) {
+            const { triggerReviewNudge } = await import('./nudge-actions');
+            await triggerReviewNudge(productId, productData.heldBy);
+        }
         revalidatePath('/sell/dashboard');
         return { success: true };
     } catch (error) {
@@ -89,9 +148,46 @@ export async function markAsSold(productId: string, fulfillmentType: string) {
     }
 }
 
-export async function deleteListing(productId: string) {
+export async function deleteListing(idToken: string, productId: string) {
     try {
-        await firestoreDb.collection('products').doc(productId).delete();
+        const decodedToken = await verifyIdToken(idToken);
+        const userId = decodedToken.uid;
+
+        const productRef = firestoreDb.collection('products').doc(productId);
+        const productSnap = await productRef.get();
+        if (!productSnap.exists) return { success: false, error: 'Product not found' };
+
+        const productData = productSnap.data() as Product;
+        if (!(await isAuthorized(decodedToken, productData))) {
+            return { success: false, error: 'You do not have permission to delete this listing.' };
+        }
+
+        await productRef.update({
+            status: 'deleted',
+            deletedAt: new Date(),
+            updatedAt: new Date(),
+        });
+
+        // Notify Bidders that the item is no longer available
+        await rejectAllBidsForProduct(productId, 'Seller removed listing');
+
+        // Enterprise Safety: Log the deletion activity
+        await logActivity({
+            action: 'product_deleted',
+            resourceId: productId,
+            resourceType: 'product',
+            performedBy: {
+                uid: userId,
+                email: decodedToken.email,
+                displayName: decodedToken.name,
+                role: decodedToken.role || 'seller'
+            },
+            details: {
+                productTitle: productData.title,
+                originalStatus: productData.status
+            }
+        });
+
         revalidatePath('/sell/dashboard');
         return { success: true };
     } catch (error) {
@@ -100,12 +196,42 @@ export async function deleteListing(productId: string) {
     }
 }
 
-export async function updateListing(productId: string, data: any) {
+export async function updateListing(idToken: string, productId: string, data: any) {
     try {
-        await firestoreDb.collection('products').doc(productId).update({
+        const decodedToken = await verifyIdToken(idToken);
+        const userId = decodedToken.uid;
+
+        const productRef = firestoreDb.collection('products').doc(productId);
+        const productSnap = await productRef.get();
+        if (!productSnap.exists) return { success: false, error: 'Product not found' };
+
+        const productData = productSnap.data() as Product;
+        if (!(await isAuthorized(decodedToken, productData))) {
+            return { success: false, error: 'You do not have permission to update this listing.' };
+        }
+
+        await productRef.update({
             ...data,
             updatedAt: new Date(),
         });
+
+        // Enterprise Safety: Log the update activity
+        await logActivity({
+            action: 'product_updated',
+            resourceId: productId,
+            resourceType: 'product',
+            performedBy: {
+                uid: userId,
+                email: decodedToken.email,
+                displayName: decodedToken.name,
+                role: decodedToken.role || 'seller'
+            },
+            details: {
+                productTitle: productData.title,
+                changedFields: Object.keys(data)
+            }
+        });
+
         revalidatePath('/sell/dashboard');
         revalidatePath(`/product/${productId}`);
         return { success: true };
@@ -115,13 +241,26 @@ export async function updateListing(productId: string, data: any) {
     }
 }
 
-export async function republishListing(productId: string) {
+export async function republishListing(idToken: string, productId: string) {
     try {
-        await firestoreDb.collection('products').doc(productId).update({
+        const decodedToken = await verifyIdToken(idToken);
+        const userId = decodedToken.uid;
+
+        const productRef = firestoreDb.collection('products').doc(productId);
+        const productSnap = await productRef.get();
+        if (!productSnap.exists) return { success: false, error: 'Product not found' };
+
+        const productData = productSnap.data() as Product;
+        if (!(await isAuthorized(decodedToken, productData))) {
+            return { success: false, error: 'You do not have permission to republish this listing.' };
+        }
+
+        await productRef.update({
             status: 'available', // Or 'active' depending on your schema. Using 'available' based on previous context.
             updatedAt: new Date(),
             soldAt: null, // Clear the sold date
-            fulfillmentStatus: null // Clear fulfillment status
+            fulfillmentStatus: null, // Clear fulfillment status
+            quantity: 1 // Ensure stock is reset when republishing
         });
         revalidatePath('/sell/dashboard');
         revalidatePath(`/product/${productId}`);
@@ -131,3 +270,4 @@ export async function republishListing(productId: string) {
         return { success: false, error: 'Failed to republish listing' };
     }
 }
+

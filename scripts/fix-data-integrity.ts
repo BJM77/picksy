@@ -1,17 +1,17 @@
 
 export {};
 
-const admin = require('firebase-admin');
-const fs = require('fs');
-const path = require('path');
+import * as admin from 'firebase-admin';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as dotenv from 'dotenv';
 
 async function main() {
     console.log('Starting data integrity backfill...');
 
-    let app;
+    dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
 
-    // Load environment variables from .env.local
-    require('dotenv').config({ path: path.resolve(process.cwd(), '.env.local') });
+    let app;
 
     if (process.env.SERVICE_ACCOUNT_JSON) {
         console.log('Found SERVICE_ACCOUNT_JSON in environment.');
@@ -20,7 +20,6 @@ async function main() {
             credential: admin.credential.cert(sa)
         });
     } else {
-        // Fallback to checking for studio-*.json files or other secrets
         const files = fs.readdirSync(process.cwd());
         const saFile = files.find((f: string) => f.startsWith('studio-') && f.endsWith('.json'));
 

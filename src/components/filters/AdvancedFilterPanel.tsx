@@ -27,11 +27,9 @@ import { Badge } from '@/components/ui/badge';
 import { Filter, X, SlidersHorizontal } from 'lucide-react';
 import type { ProductSearchParams } from '@/lib/types';
 
-const CATEGORIES = [
-    'Collector Cards',
-    'Coins',
-    'Collectibles',
-];
+import { MARKETPLACE_CATEGORIES } from '@/config/categories';
+
+const CATEGORIES = MARKETPLACE_CATEGORIES.map(c => c.name);
 
 const CONDITIONS = [
     'Mint',

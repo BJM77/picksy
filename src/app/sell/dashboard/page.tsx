@@ -82,9 +82,10 @@ export default function SellerDashboard() {
 
 
   const handleMarkAsSold = async () => {
-    if (!selectedProductForSold) return;
+    if (!selectedProductForSold || !user) return;
     setActionLoading(true);
-    const result = await markAsSold(selectedProductForSold.id, fulfillmentType);
+    const idToken = await user.getIdToken();
+    const result = await markAsSold(idToken, selectedProductForSold.id, fulfillmentType);
     if (result.success) {
       toast({ title: "Success", description: "Listing marked as sold." });
       setIsSoldDialogOpen(false);
@@ -95,8 +96,9 @@ export default function SellerDashboard() {
   };
 
   const handleDelete = async (productId: string) => {
-    if (!confirm("Are you sure you want to delete this listing?")) return;
-    const result = await deleteListing(productId);
+    if (!confirm("Are you sure you want to delete this listing?") || !user) return;
+    const idToken = await user.getIdToken();
+    const result = await deleteListing(idToken, productId);
     if (result.success) {
       toast({ title: "Success", description: "Listing deleted." });
     } else {
@@ -154,9 +156,11 @@ export default function SellerDashboard() {
 
 
   const handleRepublish = async (product: Product) => {
+    if (!user) return;
     try {
       setActionLoading(true);
-      const result = await republishListing(product.id);
+      const idToken = await user.getIdToken();
+      const result = await republishListing(idToken, product.id);
 
       if (result.success) {
         toast({

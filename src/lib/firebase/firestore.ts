@@ -34,7 +34,9 @@ const serializeData = (docData: any, docId: string) => {
 
 export const getProductById = cache(async (id: string): Promise<Product | null> => {
     try {
+        console.log(`getProductById: Attempting to fetch ${id}`);
         const docSnap = await firestoreDb.collection('products').doc(id).get();
+        console.log(`getProductById: Fetch complete. Exists: ${docSnap.exists}`);
         if (docSnap.exists) {
             return serializeData(docSnap.data(), docSnap.id) as Product;
         }
@@ -59,18 +61,10 @@ export async function getReviewsForProduct(productId: string): Promise<Review[]>
     }
 }
 
-export async function getCategories(): Promise<Category[]> {
-    try {
-        const snapshot = await firestoreDb.collection('categories')
-            .orderBy('name')
-            .get();
+import { MARKETPLACE_CATEGORIES } from '@/config/categories';
 
-        if (snapshot.empty) return [];
-        return snapshot.docs.map((doc: any) => serializeData(doc.data(), doc.id) as Category);
-    } catch (e: any) {
-        console.error('Failed to fetch categories: ', e.message);
-        return [];
-    }
+export async function getCategories(): Promise<Category[]> {
+    return MARKETPLACE_CATEGORIES;
 }
 
 export async function getTopSellers(limitCount: number): Promise<Seller[]> {
@@ -131,6 +125,24 @@ export async function getActiveProductIds(limitCount = 1000, offset = 0): Promis
         return snapshot.docs.map((doc: any) => doc.id);
     } catch (e: any) {
         console.error("Failed to fetch active product IDs:", e.message);
+        return [];
+    }
+}
+
+export async function getActiveProducts(limitCount = 1000, offset = 0): Promise<Product[]> {
+    try {
+        let query = firestoreDb.collection('products')
+            .where('status', '==', 'available')
+            .where('isDraft', '==', false);
+
+        if (offset > 0) {
+            query = query.offset(offset);
+        }
+
+        const snapshot = await query.limit(limitCount).get();
+        return snapshot.docs.map((doc: any) => serializeData(doc.data(), doc.id) as Product);
+    } catch (e: any) {
+        console.error("Failed to fetch active products:", e.message);
         return [];
     }
 }

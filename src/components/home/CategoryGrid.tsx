@@ -1,21 +1,41 @@
 "use client";
 
 import Link from 'next/link';
-import { Sparkles, Coins, Stamp, Layers, Trophy, Dna, LayoutGrid, ArrowRight } from 'lucide-react';
+import { 
+    Sparkles, 
+    Coins, 
+    Stamp, 
+    Layers, 
+    Trophy, 
+    Dna, 
+    LayoutGrid, 
+    ArrowRight,
+    Footprints
+} from 'lucide-react';
 import { Card, CardContent } from "@/components/ui/card";
+import { MARKETPLACE_CATEGORIES } from '@/config/categories';
 
-const CATEGORIES = [
-    { name: 'Pokemon', icon: Dna, href: '/category/pokemon-cards', color: 'text-yellow-600 bg-yellow-100' },
-    { name: 'NBA Cards', icon: Layers, href: '/category/nba-trading-cards', color: 'text-orange-600 bg-orange-100' },
-    { name: 'Coins', icon: Coins, href: '/coins', color: 'text-blue-600 bg-blue-100' },
-    { name: 'Comics', icon: Sparkles, href: '/collectibles/comics', color: 'text-red-600 bg-red-100' },
-    { name: 'Stamps', icon: Stamp, href: '/collectibles/stamps', color: 'text-green-600 bg-green-100' },
-    { name: 'Memorabilia', icon: Trophy, href: '/category/memorabilia', color: 'text-purple-600 bg-purple-100' },
-    { name: 'All Cards', icon: Layers, href: '/category/collector-cards', color: 'text-indigo-600 bg-indigo-100' },
-    { name: 'View All', icon: LayoutGrid, href: '/browse', color: 'text-gray-600 bg-gray-100' },
-];
+const ICON_MAP: Record<string, any> = {
+    'Footprints': Footprints,
+    'Layers': Layers,
+    'Dna': Dna,
+    'Coins': Coins,
+    'Sparkles': Sparkles,
+    'Stamp': Stamp,
+    'Trophy': Trophy,
+};
 
 export default function CategoryGrid() {
+    const categories = [
+        ...MARKETPLACE_CATEGORIES.map(cat => ({
+            name: cat.name,
+            icon: ICON_MAP[cat.iconName || 'Layers'] || Layers,
+            href: cat.href || `/category/${cat.slug}`,
+            color: cat.variantColor || 'text-gray-600 bg-gray-100'
+        })),
+        { name: 'View All', icon: LayoutGrid, href: '/browse', color: 'text-gray-600 bg-gray-100' }
+    ];
+
     return (
         <section className="bg-gray-50 dark:bg-gray-900/50 py-8 lg:py-12 border-b border-gray-100 dark:border-gray-800">
             <div className="max-w-7xl mx-auto px-4">
@@ -27,7 +47,7 @@ export default function CategoryGrid() {
                 </div>
 
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-6">
-                    {CATEGORIES.map((cat) => (
+                    {categories.map((cat) => (
                         <Link
                             key={cat.name}
                             href={cat.href}
@@ -50,3 +70,4 @@ export default function CategoryGrid() {
         </section>
     );
 }
+

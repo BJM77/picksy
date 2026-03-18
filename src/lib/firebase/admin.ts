@@ -1,9 +1,8 @@
 import 'server-only';
 import * as admin from 'firebase-admin';
-export { admin };
-import path from 'path';
-import fs from 'fs';
 
+// Re-export admin for convenience
+export { admin };
 
 function initializeFirebaseAdmin() {
     // Check for Emulator usage
@@ -37,20 +36,21 @@ function initializeFirebaseAdmin() {
     };
 
     try {
-        // Priority 1: Application Default Credentials (production/GCP)
-        if (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
-            console.log('✅ Firebase Admin: Using GOOGLE_APPLICATION_CREDENTIALS');
+        // Priority 1: Local Service Account File (Development)
+        const fs = require('fs');
+        const path = require('path');
+        const saFile = path.resolve(process.cwd(), 'service-account.json');
+        if (fs.existsSync(saFile)) {
+            const serviceAccount = JSON.parse(fs.readFileSync(saFile, 'utf8'));
             return admin.initializeApp({
                 ...config,
-                credential: admin.credential.applicationDefault(),
+                credential: admin.credential.cert(serviceAccount),
             });
         }
 
-        // Priority 2: Service Account JSON from Environment Variable
+        // Priority 2: Service Account JSON from Environment Variable (Generic/GCP)
         const saJson = process.env.SERVICE_ACCOUNT_JSON || process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-        console.log('🔍 Firebase Admin Check: saJson length:', saJson?.length || 0);
         if (saJson) {
-            console.log('✅ Firebase Admin: Using Service Account JSON from env');
             try {
                 const serviceAccount = JSON.parse(saJson);
                 if (serviceAccount.private_key) {
@@ -61,57 +61,69 @@ function initializeFirebaseAdmin() {
                     credential: admin.credential.cert(serviceAccount),
                 });
             } catch (error: any) {
-                // Don't throw here - log and continue to next priority
-                // This allows production to fall through to ADC if JSON is malformed
-                console.warn('⚠️ Firebase Admin: SERVICE_ACCOUNT_JSON parsing failed, trying other methods...');
-                console.warn('   Error:', error.message);
+                console.warn('⚠️ Firebase Admin: SERVICE_ACCOUNT_JSON parsing failed:', error.message);
             }
         }
 
-        // Priority 2.5: Individual Secret Environment Variables (App Hosting/Secrets)
-        if (process.env.FIREBASE_ADMIN_PRIVATE_KEY && process.env.FIREBASE_ADMIN_CLIENT_EMAIL) {
-            console.log('✅ Firebase Admin: Attempting to use Individual Secrets');
-            console.log('   FIREBASE_ADMIN_CLIENT_EMAIL is set:', !!process.env.FIREBASE_ADMIN_CLIENT_EMAIL);
-            console.log('   FIREBASE_ADMIN_PRIVATE_KEY length:', process.env.FIREBASE_ADMIN_PRIVATE_KEY?.length);
+        // Priority 2: Individual Secret Environment Variables (App Hosting/Secrets)
+        const clientEmail = process.env.FIREBASE_ADMIN_CLIENT_EMAIL || process.env.FIREBASE_CLIENT_EMAIL;
+        const pk = process.env.FIREBASE_ADMIN_PRIVATE_KEY || process.env.FIREBASE_PRIVATE_KEY;
+
+        if (process.env.NODE_ENV !== 'production') {
+            console.log('DIAGNOSTICS:', { hasClientEmail: !!clientEmail, hasPk: !!pk });
+        }
+
+        if (pk && clientEmail) {
+            if (process.env.NODE_ENV !== 'production') {
+                console.log('✅ Firebase Admin: Using Individual Secrets');
+            }
             try {
-                // Handle private key newlines - support both escaped (\\n) and literal newlines
-                let privateKey = process.env.FIREBASE_ADMIN_PRIVATE_KEY;
-                // Replace escaped literal \n with actual newlines if needed
+                // Formatting Fixes for Private Key
+                let privateKey = pk.trim();
+
+                // Handle literal string "\n"
                 if (privateKey.includes('\\n')) {
                     privateKey = privateKey.replace(/\\n/g, '\n');
                 }
-                const app = admin.initializeApp({
+
+                // Ensure newlines are restored if they were stripped (common in some UI dashboards)
+                // PEM keys must have newlines between lines.
+                if (!privateKey.includes('\n')) {
+                    if (process.env.NODE_ENV !== 'production') {
+                        console.log('🔧 Firebase Admin: Single-line private key detected, attempting to restore PEM formatting.');
+                    }
+                    // Standard PEM line length is 64 chars, but we only really care about the wrap
+                    privateKey = privateKey
+                        .replace('-----BEGIN PRIVATE KEY-----', '-----BEGIN PRIVATE KEY-----\n')
+                        .replace('-----END PRIVATE KEY-----', '\n-----END PRIVATE KEY-----\n');
+
+                    // We can't easily guess where the internal newlines should be if they are gone, 
+                    // but usually modern Google SDKs can handle long lines IF the header/footer are on their own lines.
+                }
+
+                // Strip extra quotes
+                if (privateKey.startsWith('"') && privateKey.endsWith('"')) privateKey = privateKey.slice(1, -1);
+                if (privateKey.startsWith("'") && privateKey.endsWith("'")) privateKey = privateKey.slice(1, -1);
+
+                console.log(`✅ Firebase Admin: Initialized for project ${process.env.FIREBASE_ADMIN_PROJECT_ID || projectId}`);
+                return admin.initializeApp({
                     ...config,
                     credential: admin.credential.cert({
                         projectId: process.env.FIREBASE_ADMIN_PROJECT_ID || projectId,
-                        clientEmail: process.env.FIREBASE_ADMIN_CLIENT_EMAIL,
+                        clientEmail: clientEmail.trim(),
                         privateKey: privateKey,
                     }),
                 });
-                console.log('✅ Firebase Admin: Successfully initialized with Individual Secrets');
-                return app;
             } catch (error: any) {
                 console.error('❌ Firebase Admin: Failed to initialize with individual secrets:', error.message);
             }
-        } else {
-            console.log('⚠️ Firebase Admin: Individual secrets not set, skipping Priority 2.5');
-            console.log('   FIREBASE_ADMIN_PRIVATE_KEY:', !!process.env.FIREBASE_ADMIN_PRIVATE_KEY);
-            console.log('   FIREBASE_ADMIN_CLIENT_EMAIL:', !!process.env.FIREBASE_ADMIN_CLIENT_EMAIL);
         }
 
-        // Priority 3: File-based Service Account (Development/Local)
-        // Only attempt this if we are likely in a local environment
-        const saPath = path.resolve(process.cwd(), 'studio-8322868971-8ca89-firebase-adminsdk-fbsvc-b2a4041fbd.json');
-        if (fs.existsSync(saPath)) {
-            console.log('✅ Firebase Admin: Using local service account file');
-            return admin.initializeApp({
-                ...config,
-                credential: admin.credential.cert(require(saPath)),
-            });
+        // Priority 3: Default ADC Fallback (Production/GCP)
+        // This works automatically on Google Cloud without manual file checks
+        if (process.env.NODE_ENV !== 'production') {
+            console.log('ℹ️ Firebase Admin: Falling back to Application Default Credentials');
         }
-
-        // Priority 4: Default ADC Fallback (useful if running in Cloud Run/Functions without explicitly set env var)
-        console.log('ℹ️ Firebase Admin: Falling back to default Application Default Credentials');
         return admin.initializeApp({
             ...config,
             credential: admin.credential.applicationDefault(),
@@ -119,7 +131,6 @@ function initializeFirebaseAdmin() {
 
     } catch (error) {
         console.error('Firebase Admin Initialization Error:', error);
-        // Return existing app if something raced and created it, mostly for safety
         if (admin.apps.length > 0) return admin.apps[0]!;
         throw error;
     }
@@ -130,17 +141,72 @@ let firestoreDb: admin.firestore.Firestore | any;
 let authAdmin: admin.auth.Auth | any;
 let storageAdmin: admin.storage.Storage | any;
 let messagingAdmin: admin.messaging.Messaging | any;
+let isFirebaseAdminReady = false;
 
 try {
     firebaseAdminApp = initializeFirebaseAdmin();
-    firestoreDb = firebaseAdminApp.firestore();
-    authAdmin = firebaseAdminApp.auth();
-    storageAdmin = firebaseAdminApp.storage();
-    messagingAdmin = firebaseAdminApp.messaging();
-    console.log('✅ Firebase Admin: All services initialized successfully');
+    // Use a proxy or simple object if init failed to avoid "Cannot read properties of undefined"
+    if (firebaseAdminApp) {
+        firestoreDb = firebaseAdminApp.firestore();
+        authAdmin = firebaseAdminApp.auth();
+        storageAdmin = firebaseAdminApp.storage();
+        messagingAdmin = firebaseAdminApp.messaging();
+        isFirebaseAdminReady = true;
+        if (process.env.NODE_ENV !== 'production') {
+            console.log('✅ Firebase Admin: All services initialized successfully');
+        }
+    } else {
+        throw new Error('initializeFirebaseAdmin returned undefined');
+    }
 } catch (error) {
     console.error('❌ CRITICAL: Failed to initialize Firebase Admin services:', error);
-    // Continue without crashing the whole module load - dependent calls will fail later with better context
+    isFirebaseAdminReady = false;
+
+    // Fail-fast in production: Do not hide fatal infrastructure errors with placeholders.
+    if (process.env.NODE_ENV === 'production') {
+        throw error;
+    }
+
+    // Fallback dummies for local development to prevent massive 500s on the homepage
+    // Robust recursive proxy to handle any chain of Firestore calls without crashing
+    const createPlaceholder = (name: string): any => {
+        const placeholder: any = new Proxy(() => { }, {
+            get: (target, prop) => {
+                const p = String(prop);
+                // Terminal methods that return promises
+                if (p === 'get') return () => Promise.resolve({
+                    exists: false,
+                    data: () => ({}),
+                    docs: [],
+                    size: 0,
+                    empty: true
+                });
+                if (p === 'set' || p === 'update' || p === 'add' || p === 'delete' || p === 'commit') return () => Promise.resolve();
+
+                // Chainable methods
+                if (['collection', 'doc', 'where', 'orderBy', 'limit', 'startAfter', 'count'].includes(p)) {
+                    return () => placeholder;
+                }
+
+                // Data access on the result of a get() might call .data() or .count
+                if (p === 'data') return () => ({ count: 0 });
+
+                return placeholder;
+            }
+        });
+        return placeholder;
+    };
+
+    firestoreDb = createPlaceholder('firestore');
+    firestoreDb.runTransaction = () => Promise.resolve();
+    authAdmin = {
+        verifyIdToken: () => {
+            console.warn('⚠️ Firebase Admin: verifyIdToken called on fallback.');
+            throw new Error('Firebase Authentication is currently unavailable.');
+        }
+    };
+    storageAdmin = { bucket: () => ({ name: 'unknown', setCorsConfiguration: () => Promise.resolve() }) };
+    messagingAdmin = { send: () => Promise.resolve() };
 }
 
 export {
@@ -149,6 +215,7 @@ export {
     storageAdmin,
     messagingAdmin,
     firebaseAdminApp,
-    initializeFirebaseAdmin
+    initializeFirebaseAdmin,
+    isFirebaseAdminReady
 };
 export const auth = authAdmin; // Alias

@@ -97,10 +97,6 @@ export function ListingForm({ initialData, onSuccess, onCancel }: ListingFormPro
     const optionsRef = useMemoFirebase(() => firestore ? doc(firestore, 'settings', 'marketplace_options') : null, [firestore]);
     const { data: marketplaceOptions } = useDoc<any>(optionsRef);
 
-    // Determine type from category
-    let listingType: 'cards' | 'coins' | 'general' = 'general';
-    if (initialData?.category === 'Collector Cards') listingType = 'cards';
-    else if (initialData?.category === 'Coins') listingType = 'coins';
 
     const form = useForm<ListingFormValues>({
         resolver: zodResolver(formSchema),
@@ -140,14 +136,43 @@ export function ListingForm({ initialData, onSuccess, onCancel }: ListingFormPro
         },
     });
 
-    const CATEGORIES_OPTIONS: string[] = marketplaceOptions?.categories || ['Collector Cards', 'Coins', 'Collectibles', 'General'];
+    // Determine type from category reactively
+    const selectedCategory = form.watch('category');
+    const listingType = useMemo(() => {
+        const cat = selectedCategory?.toLowerCase() || '';
+        if (cat.includes('card') || cat === 'pokemon') return 'cards';
+        if (cat === 'coins') return 'coins';
+        return 'general';
+    }, [selectedCategory]);
+
+    const CATEGORIES_OPTIONS: string[] = Array.from(new Set([
+        ...(marketplaceOptions?.categories || []), 
+        'Collector Cards', 'Pokemon', 'Coins', 'Sneakers', 'Memorabilia', 'Collectibles', 'General'
+    ]));
     const CONDITION_OPTIONS: string[] = marketplaceOptions?.conditions || ['Mint', 'Near Mint', 'Excellent', 'Good', 'Fair', 'Poor'];
-    const SUB_CATEGORIES: Record<string, string[]> = {
-        'Collector Cards': marketplaceOptions?.subCategories?.collector_cards || ['Sports Cards', 'Trading Cards'],
-        'Coins': marketplaceOptions?.subCategories?.coins || ['Coins', 'World Coins', 'Ancient Coins', 'Bullion'],
-        'Collectibles': marketplaceOptions?.subCategories?.collectibles || ['Stamps', 'Comics', 'Figurines', 'Toys', 'Shoes', 'Memorabilia'],
-        'General': marketplaceOptions?.subCategories?.general || ['Household', 'Electronics', 'Clothing', 'Books', 'Other']
+    
+    const DEFAULT_SUB_CATEGORIES: Record<string, string[]> = {
+        'Collector Cards': ['Sports Cards', 'Trading Cards', 'NBA', 'NFL', 'MLB', 'Soccer', 'Other'],
+        'Pokemon': ['Base Set', 'Modern', 'Vintage', 'Holo', 'Non-Holo', 'Sealed'],
+        'Coins': ['Australian Coins', 'World Coins', 'Ancient Coins', 'Bullion', 'Banknotes'],
+        'Sneakers': ['Jordan', 'Kobe', 'Nike', 'Adidas', 'Yeezy', 'Other'],
+        'Memorabilia': ['Signed Items', 'Jersey', 'Equipment', 'Photos', 'Other'],
+        'Collectibles': ['Stamps', 'Comics', 'Figurines', 'Toys', 'Other'],
+        'General': ['Household', 'Electronics', 'Clothing', 'Books', 'Other']
     };
+
+    const SUB_CATEGORIES: Record<string, string[]> = { ...DEFAULT_SUB_CATEGORIES };
+    if (marketplaceOptions?.subCategories) {
+        Object.entries(marketplaceOptions.subCategories).forEach(([key, values]) => {
+            // Map snake_case or legacy keys if needed, or just merge
+            const normalizedKey = key === 'collector_cards' ? 'Collector Cards' : 
+                                 key === 'coins' ? 'Coins' :
+                                 key === 'collectibles' ? 'Collectibles' :
+                                 key === 'general' ? 'General' : key;
+            
+            SUB_CATEGORIES[normalizedKey] = Array.from(new Set([...(SUB_CATEGORIES[normalizedKey] || []), ...(values as string[])]));
+        });
+    }
 
     const imageFiles = form.watch('imageFiles');
 
@@ -195,10 +220,12 @@ export function ListingForm({ initialData, onSuccess, onCancel }: ListingFormPro
 
             if (allUrls.length === 0) return;
             const idToken = await user.getIdToken();
-            const suggestions = await suggestListingDetails({ photoDataUris: allUrls, title: form.getValues('title') || undefined, idToken });
-            if (suggestions) {
-                Object.entries(suggestions).forEach(([key, value]) => { if (value) form.setValue(key as any, value); });
+            const result = await suggestListingDetails({ photoDataUris: allUrls, title: form.getValues('title') || undefined, idToken });
+            if (result.data) {
+                Object.entries(result.data).forEach(([key, value]) => { if (value) form.setValue(key as any, value); });
                 toast({ title: '✨ AI Magic Applied!' });
+            } else if (result.error) {
+                toast({ title: 'AI Error', description: result.error, variant: 'destructive' });
             }
         } catch (error: any) {
             toast({ title: "Auto-Fill Failed", description: error.message, variant: "destructive" });
@@ -227,7 +254,8 @@ export function ListingForm({ initialData, onSuccess, onCancel }: ListingFormPro
 
             const { imageFiles: _, ...cleanData } = data;
 
-            const result = await updateListing(initialData.id, {
+            const idToken = await user.getIdToken();
+            const result = await updateListing(idToken, initialData.id, {
                 ...cleanData,
                 imageUrls: finalImageUrls
             });

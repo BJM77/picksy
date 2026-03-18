@@ -3,51 +3,117 @@ import { db } from '@/lib/firebase/config';
 import type { Product, ProductSearchParams } from '@/lib/types';
 import { collection, query, where, orderBy, limit, getDocs, startAfter, QueryConstraint, Timestamp, Query, DocumentData, doc, getDoc } from 'firebase/firestore';
 import { serializeFirestoreData } from '@/lib/utils';
+import { normalizeCategory, RELATED_CATEGORIES } from '@/lib/constants/marketplace';
 
 const PAGE_SIZE = 24;
 
-export async function getProducts(searchParams: ProductSearchParams, userRole: string = 'viewer'): Promise<{ products: Product[], hasMore: boolean, lastVisibleId?: string }> {
-  const { page = 1, sort = 'createdAt-desc', q, category, categories, subCategory, conditions, priceRange, sellers, yearRange, isUntimed } = searchParams;
+export async function getProducts(searchParams: ProductSearchParams, userRole: string = 'viewer'): Promise<{ products: Product[], hasMore: boolean, lastVisibleId?: string, totalCount?: number }> {
+  const { page = 1, sort = 'createdAt-desc', q, subCategory, conditions, priceRange, sellers, yearRange, isUntimed, gradingCompanies, manufacturer } = searchParams;
+  let category = searchParams.category ? normalizeCategory(searchParams.category) : undefined;
+  let categories = searchParams.categories?.map((c: string) => normalizeCategory(c));
 
   const productsRef = collection(db, 'products');
   let constraints: QueryConstraint[] = [];
 
-  // Admin sees all, others see only 'available'
+  // 1. Status Filter (Security & Visibility)
   if (userRole === 'admin' || userRole === 'superadmin') {
-    // Admins can see everything, but usually want to see non-drafts unless specified
-    // We'll leave it open or filter by status if provided in searchParams
-    // If no specific filter, maybe show all?
-    // For the main grid, we usually don't want 'sold' items unless asked.
-    // But for now, let's just NOT filter by status if admin, unless they want to.
     if (searchParams.status) {
       constraints.push(where('status', '==', searchParams.status));
-    } else {
-      constraints.push(where('isDraft', '==', false)); // Legacy/Basic check
     }
+    // We will filter out 'deleted' in memory for admins later to avoid query restrictions
   } else {
-    // Public/Business/Seller
+    // Normal users and visitors ONLY see available listings - this is an exact match query, very fast and indexed.
     constraints.push(where('status', '==', 'available'));
   }
 
 
   // Build constraints based on search params
 
-  // Handle Multi-select Categories
+  // Firestore allows only ONE 'in' filter per query.
+  // We prioritize: category > size > condition > sellers
+  let inFilterUsed = false;
+  let filterConditionsInMemory: string[] | null = null;
+  let filterSizesInMemory: string[] | null = null;
+  let filterSellersInMemory: string[] | null = null;
+  let filterGradingInMemory: string[] | null = null;
+
+  // Handle Multi-select Categories or Expand Single Category to Related
   if (categories && categories.length > 0) {
-    constraints.push(where('category', 'in', categories.slice(0, 30)));
+    if (categories.length === 1) {
+      const related = RELATED_CATEGORIES[categories[0]];
+      if (related && related.length > 1) {
+        constraints.push(where('category', 'in', related));
+        inFilterUsed = true;
+      } else {
+        constraints.push(where('category', '==', categories[0]));
+      }
+    } else {
+      constraints.push(where('category', 'in', categories.slice(0, 10)));
+      inFilterUsed = true;
+    }
   } else if (category) {
-    // Fallback for single category
-    constraints.push(where('category', '==', category));
+    // Single category: check for related terms (e.g. Sneakers -> [Sneakers, Shoes])
+    const related = RELATED_CATEGORIES[category];
+    if (related && related.length > 1) {
+      constraints.push(where('category', 'in', related));
+      inFilterUsed = true;
+    } else {
+      constraints.push(where('category', '==', category));
+    }
   }
 
   if (subCategory) {
     constraints.push(where('subCategory', '==', subCategory));
   }
+
   if (conditions && conditions.length > 0) {
-    constraints.push(where('condition', 'in', conditions));
+    if (conditions.length === 1) {
+      constraints.push(where('condition', '==', conditions[0]));
+    } else if (!inFilterUsed) {
+      constraints.push(where('condition', 'in', conditions.slice(0, 10)));
+      inFilterUsed = true;
+    } else {
+      filterConditionsInMemory = conditions;
+    }
   }
+
+  if (searchParams.sizes && searchParams.sizes.length > 0) {
+    const sizes = searchParams.sizes;
+    if (sizes.length === 1) {
+      constraints.push(where('size', '==', sizes[0]));
+    } else if (!inFilterUsed) {
+      constraints.push(where('size', 'in', sizes.slice(0, 10)));
+      inFilterUsed = true;
+    } else {
+      filterSizesInMemory = sizes;
+    }
+  }
+
   if (sellers && sellers.length > 0) {
-    constraints.push(where('sellerId', 'in', sellers.slice(0, 30)));
+    if (sellers.length === 1) {
+      constraints.push(where('sellerId', '==', sellers[0]));
+    } else if (!inFilterUsed) {
+      constraints.push(where('sellerId', 'in', sellers.slice(0, 10)));
+      inFilterUsed = true;
+    } else {
+      filterSellersInMemory = sellers;
+    }
+  }
+
+  // Card Specific Filters
+  if (gradingCompanies && gradingCompanies.length > 0) {
+    if (gradingCompanies.length === 1) {
+      constraints.push(where('gradingCompany', '==', gradingCompanies[0]));
+    } else if (!inFilterUsed) {
+      constraints.push(where('gradingCompany', 'in', gradingCompanies.slice(0, 10)));
+      inFilterUsed = true;
+    } else {
+      filterGradingInMemory = gradingCompanies;
+    }
+  }
+
+  if (manufacturer) {
+    constraints.push(where('manufacturer', '==', manufacturer));
   }
 
   // Verified Only Filter
@@ -78,7 +144,13 @@ export async function getProducts(searchParams: ProductSearchParams, userRole: s
   let filterYearInMemory = false;
   let filterPriceInMemory = false;
 
-  const [sortField, sortDirection] = sort.split('-') as ['createdAt' | 'price' | 'year' | 'views' | 'title', 'asc' | 'desc'];
+  // Handle sort aliases and potential missing directions
+  let effectiveSort = sort;
+  if (sort === 'newest') effectiveSort = 'createdAt-desc';
+  if (sort === 'price-asc' || sort === 'price-desc') effectiveSort = sort;
+  if (!effectiveSort.includes('-')) effectiveSort = 'createdAt-desc';
+
+  const [sortField, sortDirection] = effectiveSort.split('-') as ['createdAt' | 'price' | 'year' | 'views' | 'title', 'asc' | 'desc'];
   let orderByConstraints: QueryConstraint[] = [];
 
   if (q) {
@@ -141,12 +213,9 @@ export async function getProducts(searchParams: ProductSearchParams, userRole: s
       }
     }
   } else {
-    // SCENARIO 4: STANDARD SORT (No Ranges)
+    // Standard Sort (No Ranges)
     // No inequality filters, so we can sort by whatever we want.
-    // Prioritize Featured items if no range filters interfere
-    if (sortField === 'createdAt' || sortField === 'views') {
-      orderByConstraints.push(orderBy('isFeatured', 'desc'));
-    }
+    // NOTE: Removed orderBy('isFeatured') as it excludes documents missing the field.
     orderByConstraints.push(orderBy(sortField, sortDirection));
   }
 
@@ -168,69 +237,125 @@ export async function getProducts(searchParams: ProductSearchParams, userRole: s
     finalQuery = query(productsRef, ...finalConstraints, limit(PAGE_SIZE));
   }
 
-  const querySnapshot = await getDocs(finalQuery);
+  try {
+    const querySnapshot = await getDocs(finalQuery);
 
-  let products = querySnapshot.docs.map(doc => serializeFirestoreData({
-    id: doc.id,
-    ...doc.data()
-  }) as Product);
+    let products = querySnapshot.docs.map((doc: any) => serializeFirestoreData({
+      id: doc.id,
+      ...doc.data()
+    }) as Product);
 
-  // In-Memory Filters
-  const now = new Date();
+    // In-Memory Filters
+    const now = new Date();
 
-  // Tiered Access Filtering
-  const isBusinessOrHigher = userRole === 'business' || userRole === 'admin' || userRole === 'superadmin';
+    // Tiered Access Filtering
+    const isBusinessOrHigher = userRole === 'business' || userRole === 'admin' || userRole === 'superadmin';
 
-  products = products.filter(p => {
-    // 1. Text Search - Handled by Firestore Prefix Search (see getProducts constraints)
+    products = products.filter((p: Product) => {
+      // 0. Logical Delete Filter (Admins only, normal users handled by Firestore query above)
+      if ((userRole === 'admin' || userRole === 'superadmin') && !searchParams.status && p.status === 'deleted') {
+        return false;
+      }
 
-    // 2. Year Filter (in memory)
-    if (filterYearInMemory && yearRange && p.year) {
-      // Manual check for yearRange existence to satisfy TS, though logic guarantees it
-      if (p.year < yearRange[0] || p.year > yearRange[1]) return false;
-    }
+      // 1. Text Search - Handled by Firestore Prefix Search (see getProducts constraints)
 
-    // 3. Public Release Timing (for non-business/non-admin)
-    if (!isBusinessOrHigher) {
-      const releaseAt = p.publicReleaseAt as any;
-      if (releaseAt) {
-        // Handle Firestore Timestamp or Date object or serialized
-        let releaseDate: Date | null = null;
-        if (typeof releaseAt.toDate === 'function') {
-          releaseDate = releaseAt.toDate();
-        } else if (releaseAt.seconds) {
-          releaseDate = new Date(releaseAt.seconds * 1000);
-        } else if (releaseAt instanceof Date) {
-          releaseDate = releaseAt;
+      // 2. Year Filter (in memory)
+      if (filterYearInMemory && yearRange) {
+        const itemYear = p.year ? Number(p.year) : null;
+        if (!itemYear || itemYear < yearRange[0] || itemYear > yearRange[1]) return false;
+      }
+
+      // 3. Condition Filter (in memory if multiple conditions and 'in' already used)
+      if (filterConditionsInMemory) {
+        if (!p.condition || !filterConditionsInMemory.includes(p.condition)) return false;
+      }
+
+      // 4. Size Filter (in memory if multiple sizes and 'in' already used)
+      if (filterSizesInMemory) {
+        if (!p.size || !filterSizesInMemory.includes(p.size)) return false;
+      }
+
+      // 5. Seller Filter (in memory if multiple sellers and 'in' already used)
+      if (filterSellersInMemory) {
+        if (!p.sellerId || !filterSellersInMemory.includes(p.sellerId)) return false;
+      }
+
+      // 6. Minimum Rating Filter (if present)
+      if (searchParams.minRating && p.sellerRating !== undefined) {
+        if (p.sellerRating < searchParams.minRating) return false;
+      }
+
+      // 7. Grading Filter (in memory)
+      if (filterGradingInMemory) {
+        if (!p.gradingCompany || !filterGradingInMemory.includes(p.gradingCompany)) return false;
+      }
+
+      // 3. Public Release Timing (for non-business/non-admin)
+      if (!isBusinessOrHigher) {
+        const releaseAt = p.publicReleaseAt as any;
+        if (releaseAt) {
+          // Handle Firestore Timestamp or Date object or serialized
+          let releaseDate: Date | null = null;
+          if (typeof releaseAt.toDate === 'function') {
+            releaseDate = releaseAt.toDate();
+          } else if (releaseAt.seconds) {
+            releaseDate = new Date(releaseAt.seconds * 1000);
+          } else if (releaseAt.value) {
+            releaseDate = new Date(releaseAt.value);
+          } else if (releaseAt instanceof Date) {
+            releaseDate = releaseAt;
+          }
+
+          if (releaseDate && releaseDate > now) {
+            return false; // Not yet public
+          }
         }
+      }
 
-        if (releaseDate && releaseDate > now) {
-          return false; // Not yet public
+      // 4. Multibuy Filter (Removed in favor of Firestore filter)
+      // if (searchParams.multibuyEnabled && !p.multibuyEnabled) {
+      //   return false;
+      // }
+
+      return true;
+    });
+
+    const hasMore = querySnapshot.docs.length === PAGE_SIZE;
+    const lastVisibleId = querySnapshot.docs.length > 0 ? querySnapshot.docs[querySnapshot.docs.length - 1].id : undefined;
+
+    let totalCount: number | undefined = undefined;
+    // Only fetch count on first page to save reads
+    // OPTIMIZATION: Skip count for text searches (q) as it requires a full collection scan matches
+    if (!searchParams.lastId && page === 1 && !q) {
+      try {
+        const countQuery = query(productsRef, ...constraints);
+        const firestoreMod = await import('firebase/firestore');
+        if (firestoreMod && typeof firestoreMod.getCountFromServer === 'function') {
+          const snapshot = await firestoreMod.getCountFromServer(countQuery);
+          totalCount = snapshot.data().count;
         }
+      } catch (e) {
+        console.error("Failed to count products", e);
       }
     }
 
-    // 4. Multibuy Filter (Removed in favor of Firestore filter)
-    // if (searchParams.multibuyEnabled && !p.multibuyEnabled) {
-    //   return false;
-    // }
+    const result = { products, hasMore, lastVisibleId, totalCount };
 
-    return true;
-  });
-
-  const hasMore = querySnapshot.docs.length === PAGE_SIZE;
-  const lastVisibleId = querySnapshot.docs.length > 0 ? querySnapshot.docs[querySnapshot.docs.length - 1].id : undefined;
-
-  const result = { products, hasMore, lastVisibleId };
-
-  return result;
+    return result;
+  } catch (error: any) {
+    console.error("Error in getProducts:", error.message);
+    if (error.code === 'failed-precondition') {
+      console.warn("Firestore index missing. Returning empty results to prevent crash.");
+    }
+    return { products: [], hasMore: false };
+  }
 }
 
 export async function getAllProducts(): Promise<Product[]> {
   const productsRef = collection(db, 'products');
-  const q = query(productsRef, where('isDraft', '==', false), orderBy('createdAt', 'desc'));
+  const q = query(productsRef, where('status', '==', 'available'), orderBy('createdAt', 'desc'));
   const querySnapshot = await getDocs(q);
-  const products = querySnapshot.docs.map(doc => serializeFirestoreData({
+  const products = querySnapshot.docs.map((doc: any) => serializeFirestoreData({
     id: doc.id,
     ...doc.data()
   }) as Product);

@@ -3,6 +3,7 @@
 import { firestoreDb as db, auth as adminAuth } from '@/lib/firebase/admin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { serializeFirestoreData } from '@/lib/utils';
+import { checkForAdminWantedMatch } from './admin-wanted';
 
 export interface DraftListingData {
     sellerId: string;
@@ -15,12 +16,21 @@ export interface DraftListingData {
     quantity: number;
     isReverseBidding: boolean;
     autoRepricingEnabled: boolean;
+    autoAcceptPrice?: number;
+    floorPrice?: number;
     isVault: boolean;
     imageUrls: string[];
     status: 'draft' | 'available';
     isDraft: boolean;
     createdAt: FieldValue;
     updatedAt: FieldValue;
+    acceptsPayId?: boolean;
+    // Sneaker Specifics
+    size?: string;
+    brand?: string;
+    model?: string;
+    styleCode?: string;
+    colorway?: string;
 
     // Trading Card Specifics
     year?: number;
@@ -69,11 +79,20 @@ export async function saveDraftListing(userId: string, data: Omit<DraftListingDa
         ...data,
         status: 'draft',
         isDraft: true,
+        isFeatured: false,
+        isPromoted: false,
         updatedAt: FieldValue.serverTimestamp(),
     };
 
+    // Sanitize to remove undefined values, which causes Firestore Admin to crash
+    Object.keys(listingData).forEach(key => {
+        if (listingData[key] === undefined) {
+            delete listingData[key];
+        }
+    });
+
     // Auto-apply Bronze Multibuy for cards < $5
-    if (listingData.category === 'Collector Cards' && Number(listingData.price) < 5 && Number(listingData.price) > 0) {
+    if ((listingData.category === 'Collector Cards' || listingData.category === 'Trading Cards') && Number(listingData.price) < 5 && Number(listingData.price) > 0) {
         listingData.multibuyEnabled = true;
         listingData.multiCardTier = 'bronze';
     }
@@ -213,7 +232,17 @@ export async function publishListing(draftId: string, userId: string): Promise<v
             sellerEmail: userData?.email || '',
             sellerAvatar: userData?.photoURL || '',
             sellerVerified: userData?.isVerified || false,
+            isFeatured: data?.isFeatured ?? false,
+            isPromoted: data?.isPromoted ?? false,
         };
+
+        // Check for Super Admin Personal Wanted list matches
+        const isMatch = await checkForAdminWantedMatch(data.title, data.category || 'Sneakers');
+        if (isMatch) {
+            updateData.status = 'on_hold';
+            updateData.holdReason = 'Personal Wanted Match (Super Admin)';
+            updateData.adminWantedMatch = true;
+        }
 
         await docRef.update(updateData);
     } else {

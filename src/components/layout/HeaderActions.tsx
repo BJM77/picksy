@@ -38,13 +38,13 @@ export default function HeaderActions() {
             {user && (
                 <div className="flex items-center gap-1 md:gap-2">
                     {/* Mobile Plus Button */}
-                    <Button asChild variant="default" size="icon" className="h-9 w-9 flex md:hidden rounded-full shadow-sm">
+                    <Button asChild variant="default" size="icon" className="h-9 w-9 flex md:hidden rounded-full shadow-sm text-white">
                         <Link href="/sell/create" aria-label="Sell Item">
                             <PlusCircle className="h-5 w-5" />
                         </Link>
                     </Button>
                     {/* Desktop Button */}
-                    <Button asChild variant="default" size="sm" className="hidden md:flex rounded-full px-4">
+                    <Button asChild variant="default" size="sm" className="hidden md:flex rounded-full px-4 text-white">
                         <Link href="/sell/create">Sell Item</Link>
                     </Button>
                 </div>

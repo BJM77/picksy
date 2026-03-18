@@ -86,13 +86,31 @@ export default function CreateListingPage() {
   const optionsRef = useMemoFirebase(() => firestore ? doc(firestore, 'settings', 'marketplace_options') : null, [firestore]);
   const { data: marketplaceOptions } = useDoc<any>(optionsRef);
 
-  const SUB_CATEGORIES: Record<string, string[]> = {
-    'Collector Cards': marketplaceOptions?.subCategories?.collector_cards || ['Sports Cards', 'Trading Cards'],
-    'Coins': marketplaceOptions?.subCategories?.coins || ['Coins', 'World Coins', 'Ancient Coins', 'Bullion'],
-    'Collectibles': marketplaceOptions?.subCategories?.collectibles || ['Stamps', 'Comics', 'Figurines', 'Toys', 'Shoes', 'Memorabilia'],
-    'General': marketplaceOptions?.subCategories?.general || ['Household', 'Electronics', 'Clothing', 'Books', 'Other']
+  const DEFAULT_SUB_CATEGORIES: Record<string, string[]> = {
+    'Collector Cards': ['Sports Cards', 'Trading Cards', 'NBA', 'NFL', 'MLB', 'Soccer', 'Other'],
+    'Pokemon': ['Base Set', 'Modern', 'Vintage', 'Holo', 'Non-Holo', 'Sealed'],
+    'Coins': ['Australian Coins', 'World Coins', 'Ancient Coins', 'Bullion', 'Banknotes'],
+    'Sneakers': ['Jordan', 'Kobe', 'Nike', 'Adidas', 'Yeezy', 'Other'],
+    'Memorabilia': ['Signed Items', 'Jersey', 'Equipment', 'Photos', 'Other'],
+    'Collectibles': ['Stamps', 'Comics', 'Figurines', 'Toys', 'Other'],
+    'General': ['Household', 'Electronics', 'Clothing', 'Books', 'Other']
   };
+
+  const SUB_CATEGORIES: Record<string, string[]> = { ...DEFAULT_SUB_CATEGORIES };
+  if (marketplaceOptions?.subCategories) {
+    Object.entries(marketplaceOptions.subCategories).forEach(([key, values]) => {
+      const normalizedKey = key === 'collector_cards' ? 'Collector Cards' :
+        key === 'coins' ? 'Coins' :
+        key === 'collectibles' ? 'Collectibles' :
+        key === 'general' ? 'General' : key;
+      SUB_CATEGORIES[normalizedKey] = Array.from(new Set([...(SUB_CATEGORIES[normalizedKey] || []), ...(values as string[])]));
+    });
+  }
   const CONDITION_OPTIONS: string[] = marketplaceOptions?.conditions || ['Mint', 'Near Mint', 'Excellent', 'Good', 'Fair', 'Poor'];
+  const CATEGORIES_OPTIONS: string[] = Array.from(new Set([
+    ...(marketplaceOptions?.categories || []),
+    'Collector Cards', 'Pokemon', 'Coins', 'Sneakers', 'Memorabilia', 'Collectibles', 'General'
+  ]));
 
   const form = useForm<ListingFormValues>({
     resolver: zodResolver(formSchema),
@@ -163,8 +181,9 @@ export default function CreateListingPage() {
           setImagePreviews(data.imageUrls || []);
 
           // Infer type
-          if (data.category === 'Collector Cards') setSelectedType('cards');
-          else if (data.category === 'Coins') setSelectedType('coins');
+          const cat = (data.category || '').toLowerCase();
+          if (cat.includes('card') || cat === 'pokemon') setSelectedType('cards');
+          else if (cat === 'coins') setSelectedType('coins');
           else setSelectedType('general');
 
           setCurrentStep(1); // Jump to photos on draft load
@@ -184,7 +203,7 @@ export default function CreateListingPage() {
     setSelectedType(type);
     localStorage.setItem('preferredListingType', type);
     // Set default category
-    const cat = type === 'cards' ? 'Collector Cards' : type === 'coins' ? 'Coins' : 'General';
+    const cat = type === 'cards' ? 'Collector Cards' : type === 'coins' ? 'Coins' : 'General Collectibles';
     form.setValue('category', cat);
     setCurrentStep(1);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -219,11 +238,13 @@ export default function CreateListingPage() {
 
       if (allUrls.length === 0) return;
       const idToken = await user.getIdToken();
-      const suggestions = await suggestListingDetails({ photoDataUris: allUrls, title: form.getValues('title') || undefined, category: form.getValues('category'), idToken });
-      if (suggestions) {
-        Object.entries(suggestions).forEach(([key, value]) => { if (value) form.setValue(key as any, value); });
+      const result = await suggestListingDetails({ photoDataUris: allUrls, title: form.getValues('title') || undefined, category: form.getValues('category'), idToken });
+      if (result.data) {
+        Object.entries(result.data).forEach(([key, value]) => { if (value) form.setValue(key as any, value); });
         toast({ title: '✨ AI Magic Applied!', description: 'Details have been auto-filled.' });
         // Optional: Auto-advance if confidence is high? For now, stay to let user verify.
+      } else if (result.error) {
+        toast({ title: 'AI Error', description: result.error, variant: 'destructive' });
       }
     } catch (error: any) {
       toast({ title: "Auto-Fill Failed", description: error.message, variant: "destructive" });
@@ -369,6 +390,7 @@ export default function CreateListingPage() {
               form={form}
               selectedType={selectedType || 'general'}
               subCategories={SUB_CATEGORIES}
+              categoryOptions={CATEGORIES_OPTIONS}
               conditionOptions={CONDITION_OPTIONS}
             />
           )}

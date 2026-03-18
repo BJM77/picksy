@@ -160,7 +160,10 @@ export default function EnhancedAICardGrader({ onGradeComplete, onApplySuggestio
                 idToken: token
             });
 
-            setListingResult(result);
+            if (result.error) {
+                throw new Error(result.error);
+            }
+            setListingResult(result.data || null);
 
             toast({
                 title: "Analysis Complete!",
